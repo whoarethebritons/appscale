@@ -45,6 +45,9 @@ STANDARD_COL_FAM = "Standard1"
 # Default time to try to connect to a node in cassandra.
 CONNECTION_TIMEOUT = 0.5
 
+# Fixed key size. Pad to make sure all keys are this long.
+FIXED_KEY_SIZE = 1024
+
 # Uncomment this to enable logging for pycassa.
 #log = pycassa.PycassaLogger()
 #log.set_logger_name('pycassa_library')
@@ -72,9 +75,31 @@ class DatastoreProxy(AppDBInterface):
     self.pool = pycassa.ConnectionPool(keyspace=KEYSPACE,
       timeout=CONNECTION_TIMEOUT, server_list=server_list, prefill=False)
 
-  def batch_get_entity(self, table_name, row_keys, column_names):
+  def pad_key(self, row_key):
+    """ Pads a key to be fixed length.
+
+    Args:
+      A str key.
+    Returns:
+      A str key of fixed length.
     """
-    Takes in batches of keys and retrieves their corresponding rows.
+    return row_key.ljust(FIXED_KEY_SIZE, '\x00')
+
+  def pad_keys(self, row_keys):
+    """ Pads a list of keys to be fixed length.
+
+    Args:
+      A list of string keys.
+    Returns:
+      A list of fixed length string keys.
+    """
+    padded_keys = []
+    for key in row_keys:
+      padded_keys.append(self.pad_key(key))
+    return padded_keys
+
+  def batch_get_entity(self, table_name, row_keys, column_names):
+    """ Takes in batches of keys and retrieves their corresponding rows.
     
     Args:
       table_name: The table to access
@@ -92,19 +117,21 @@ class DatastoreProxy(AppDBInterface):
     if not isinstance(column_names, list): raise TypeError("Expected a list")
     if not isinstance(row_keys, list): raise TypeError("Expected a list")
 
+    padded_row_keys = self.pad_keys(row_keys)
+
     try:
       ret_val = {}
       client = self.pool.get()
       path = ColumnPath(table_name)
       slice_predicate = SlicePredicate(column_names=column_names)
-      results = client.multiget_slice(row_keys,
+      results = client.multiget_slice(padded_row_keys,
                                      path,
                                      slice_predicate,
                                      CONSISTENCY_QUORUM)
 
-      for row in row_keys:
+      for row, padded_row in zip(row_keys, padded_row_keys):
         col_dic = {}
-        for columns in results[row]:
+        for columns in results[padded_row]:
           col_dic[columns.column.name] = columns.column.value
         ret_val[row] = col_dic
 
@@ -137,13 +164,13 @@ class DatastoreProxy(AppDBInterface):
     if not isinstance(cell_values, dict): raise TypeError("Expected a dic")
 
     try:
-      cf = pycassa.ColumnFamily(self.pool,table_name)
+      cf = pycassa.ColumnFamily(self.pool, table_name)
       multi_map = {}
       for key in row_keys:
         cols = {}
         for cname in column_names:
           cols[cname] = cell_values[key][cname]
-        multi_map[key] = cols
+        multi_map[self.pad_key(key)] = cols
       cf.batch_insert(multi_map, write_consistency_level=CONSISTENCY_QUORUM)
     except Exception, ex:
       logging.exception(ex)
@@ -165,9 +192,10 @@ class DatastoreProxy(AppDBInterface):
     if not isinstance(table_name, str): raise TypeError("Expected a str")
     if not isinstance(row_keys, list): raise TypeError("Expected a list")
 
+    row_keys = self.pad_keys(row_keys)
     path = ColumnPath(table_name)
     try:
-      cf = pycassa.ColumnFamily(self.pool,table_name)
+      cf = pycassa.ColumnFamily(self.pool, table_name)
       b = cf.batch()
       for key in row_keys:
         b.remove(key)
@@ -274,6 +302,9 @@ class DatastoreProxy(AppDBInterface):
     if not end_inclusive:
       row_count += 1
 
+    start_key = self.pad_key(start_key)
+    end_key = self.pad_key(end_key)
+
     results = []
     keyslices = []
     # There is a bug in pycassa/cassandra if the limit is 1,
@@ -283,7 +314,7 @@ class DatastoreProxy(AppDBInterface):
       row_count = 2
 
     try:
-      cf = pycassa.ColumnFamily(self.pool,table_name)
+      cf = pycassa.ColumnFamily(self.pool, table_name)
       keyslices = cf.get_range(columns=column_names,
                                start=start_key,
                                finish=end_key,
