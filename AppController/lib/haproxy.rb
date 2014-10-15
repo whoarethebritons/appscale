@@ -42,7 +42,7 @@ module HAProxy
 
 
   # HAProxy Configuration to use for a thread safe gae app.
-  THREADED_SERVER_OPTIONS = "maxconn 7 check"
+  THREADED_SERVER_OPTIONS = "maxconn 10 check"
   
 
   # The first port that haproxy will bind to for App Engine apps.
@@ -309,6 +309,16 @@ defaults
 
   # Amount of time after which a health check is considered to have timed out
   timeout check 5000
+
+  # Enable the web UI for haproxy statistics.
+  listen stats :1936
+      mode http
+      stats enable
+      stats hide-version
+      stats realm Haproxy Statistics
+      stats uri /
+      stats auth admin:pippo
+
 CONFIG
 
     # Create the sites enabled folder
