@@ -76,29 +76,6 @@ class DatastoreProxy(AppDBInterface):
     self.pool = pycassa.ConnectionPool(keyspace=KEYSPACE,
       timeout=CONNECTION_TIMEOUT, server_list=server_list, prefill=False)
 
-  def pad_key(self, row_key):
-    """ Pads a key to be fixed length.
-
-    Args:
-      A str key.
-    Returns:
-      A str key of fixed length.
-    """
-    return row_key.ljust(FIXED_KEY_SIZE, '\x00')
-
-  def pad_keys(self, row_keys):
-    """ Pads a list of keys to be fixed length.
-
-    Args:
-      A list of string keys.
-    Returns:
-      A list of fixed length string keys.
-    """
-    padded_keys = []
-    for key in row_keys:
-      padded_keys.append(self.pad_key(key))
-    return padded_keys
-
   def batch_get_entity(self, table_name, row_keys, column_names):
     """ Takes in batches of keys and retrieves their corresponding rows.
     
@@ -118,21 +95,19 @@ class DatastoreProxy(AppDBInterface):
     if not isinstance(column_names, list): raise TypeError("Expected a list")
     if not isinstance(row_keys, list): raise TypeError("Expected a list")
 
-    padded_row_keys = self.pad_keys(row_keys)
-
     try:
       ret_val = {}
       client = self.pool.get()
       path = ColumnPath(table_name)
       slice_predicate = SlicePredicate(column_names=column_names)
-      results = client.multiget_slice(padded_row_keys,
+      results = client.multiget_slice(row_keys,
                                      path,
                                      slice_predicate,
                                      CONSISTENCY_QUORUM)
 
-      for row, padded_row in zip(row_keys, padded_row_keys):
+      for row in row_keys:
         col_dic = {}
-        for columns in results[padded_row]:
+        for columns in results[row]:
           col_dic[columns.column.name] = columns.column.value
         ret_val[row] = col_dic
 
@@ -176,7 +151,7 @@ class DatastoreProxy(AppDBInterface):
         cols = {}
         for cname in column_names:
           cols[cname] = cell_values[key][cname]
-        multi_map[self.pad_key(key)] = cols
+        multi_map[key] = cols
       cf.batch_insert(multi_map, write_consistency_level=CONSISTENCY_QUORUM)
     except Exception, ex:
       logging.exception(ex)
@@ -198,7 +173,6 @@ class DatastoreProxy(AppDBInterface):
     if not isinstance(table_name, str): raise TypeError("Expected a str")
     if not isinstance(row_keys, list): raise TypeError("Expected a list")
 
-    row_keys = self.pad_keys(row_keys)
     path = ColumnPath(table_name)
     try:
       cf = pycassa.ColumnFamily(self.pool, table_name)
@@ -307,9 +281,6 @@ class DatastoreProxy(AppDBInterface):
       row_count += 1
     if not end_inclusive:
       row_count += 1
-
-    start_key = self.pad_key(start_key)
-    end_key = self.pad_key(end_key)
 
     results = []
     keyslices = []
