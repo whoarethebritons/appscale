@@ -6,6 +6,7 @@
 import base64
 import logging
 import os
+import random
 import string
 import sys
 import time
@@ -142,6 +143,10 @@ class DatastoreProxy(AppDBInterface):
       logging.exception(ex)
       raise AppScaleDBConnectionError("Exception on batch_get: %s" % str(ex))
 
+  def random_sample_key(self, key):
+    """ Dump a key to the disk for getting a sample of keys. """
+    file_io.append("/opt/appscale/rangekeysample.out", key.encode("hex") + '\n')
+
   def batch_put_entity(self, table_name, row_keys, column_names, cell_values):
     """
     Allows callers to store multiple rows with a single call. A row can 
@@ -162,7 +167,8 @@ class DatastoreProxy(AppDBInterface):
     if not isinstance(column_names, list): raise TypeError("Expected a list")
     if not isinstance(row_keys, list): raise TypeError("Expected a list")
     if not isinstance(cell_values, dict): raise TypeError("Expected a dic")
-
+    if random.randint(0,10000) == 0:
+      self.random_sample_key(random.choice(row_keys))
     try:
       cf = pycassa.ColumnFamily(self.pool, table_name)
       multi_map = {}

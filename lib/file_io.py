@@ -35,6 +35,17 @@ def write(file_name, contents):
   FILE.write(contents)
   FILE.close()
 
+def append(file_name, contents):
+  """ Opens and writes a file. Will truncate over existing files.
+   
+  Args:
+    file_name: The full path or relative path of the file to write to
+  """
+  FILE = open(file_name, "a")
+  FILE.write(contents)
+  FILE.close()
+
+
 def delete(file_name):
   """ Deletes a given file. 
   
