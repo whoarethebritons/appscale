@@ -217,6 +217,7 @@ public class LocalLogService extends AbstractLocalRpcService
 
   public synchronized void addAppLogLine(String requestId, long time, int level, String message)
   {
+    return;
     if (message == null)
     {
       return;

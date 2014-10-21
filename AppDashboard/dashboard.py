@@ -785,7 +785,8 @@ class LogUploadPage(webapp2.RequestHandler):
 
 
   def post(self):
-    """ Saves logs records to the Datastore for later viewing. """
+    """ Saves logs records to the Datastore for later viewing. """ 
+    return
     encoded_data = self.request.body
     data = json.loads(encoded_data)
     service_name = data['service_name']

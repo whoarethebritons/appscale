@@ -44,7 +44,7 @@ KEYSPACE = "Keyspace1"
 STANDARD_COL_FAM = "Standard1"
 
 # Default time to try to connect to a node in cassandra.
-CONNECTION_TIMEOUT = 0.5
+CONNECTION_TIMEOUT = 5.0
 
 # Fixed key size. Pad to make sure all keys are this long.
 FIXED_KEY_SIZE = 1024
