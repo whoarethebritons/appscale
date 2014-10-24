@@ -49,6 +49,9 @@ CONNECTION_TIMEOUT = 5.0
 # Fixed key size. Pad to make sure all keys are this long.
 FIXED_KEY_SIZE = 1024
 
+# Pool multiplier times the number of servers there are.
+POOL_MULTIPLIER = 2
+
 # Uncomment this to enable logging for pycassa.
 #log = pycassa.PycassaLogger()
 #log.set_logger_name('pycassa_library')
@@ -73,7 +76,8 @@ class DatastoreProxy(AppDBInterface):
     self.hosts = list(set(database_master + database_slaves))
     self.port = CASS_DEFAULT_PORT
     server_list = ["{0}:{1}".format(host, self.port) for host in self.hosts]
-    self.pool = pycassa.ConnectionPool(keyspace=KEYSPACE,
+    pool_size = POOL_MULTIPLIER * len(server_list)
+    self.pool = pycassa.ConnectionPool(keyspace=KEYSPACE, pool_size=pool_size,
       timeout=CONNECTION_TIMEOUT, server_list=server_list, prefill=False)
 
   def batch_get_entity(self, table_name, row_keys, column_names):
