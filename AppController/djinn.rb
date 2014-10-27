@@ -2363,6 +2363,18 @@ class Djinn
     Nginx.reload()
   end
 
+  def configure_db_nginx()
+    all_db_private_ips = []
+    @nodes.each { | node |
+      if node.is_db_master? or node.is_db_slave?
+        all_db_private_ips.push(node.private_ip)
+      end
+    }
+    Nginx.create_datastore_server_config(all_db_private_ips, DatastoreServer::PROXY_PORT)
+    Nginx.reload()
+  end
+
+
   def write_database_info()
     table = @options["table"]
     replication = @options["replication"]
