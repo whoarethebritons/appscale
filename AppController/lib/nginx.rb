@@ -497,15 +497,20 @@ CONFIG
   end
 
   # Create the configuration file for the datastore_server
-  def self.create_datastore_server_config(my_ip, proxy_port)
+  def self.create_datastore_server_config(all_private_ips, proxy_port)
     config = <<CONFIG
 upstream #{DatastoreServer::NAME} {
-    server #{my_ip}:#{proxy_port};
+CONFIG
+    all_private_ips.each { |ip| 
+      config += <<CONFIG
+    server #{ip}:#{proxy_port};
+CONFIG
+    }
+    config += <<CONFIG
 }
     
 server {
     listen #{DatastoreServer::LISTEN_PORT_NO_SSL};
-    server_name #{my_ip};
     root /root/appscale/AppDB/;
     # Uncomment these lines to enable logging, and comment out the following two
     #access_log  /var/log/nginx/datastore_server.access.log upstream;
