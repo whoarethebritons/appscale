@@ -116,7 +116,7 @@ module TaskQueue
     hostname = `hostname`.chomp()
     start_cmds = ["/usr/sbin/service rabbitmq-server restart",
                   "/usr/sbin/rabbitmqctl stop_app",
-                  "/usr/sbin/rabbitmqctl cluster rabbit@#{hostname}",
+                  "/usr/sbin/rabbitmqctl cluster rabbit@#{master_ip}",
                   "/usr/sbin/rabbitmqctl start_app"]
     full_cmd = "#{start_cmds.join('; ')}"
     stop_cmd = "/usr/sbin/service rabbitmq-server stop"
