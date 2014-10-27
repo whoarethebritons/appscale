@@ -218,54 +218,54 @@ public class LocalLogService extends AbstractLocalRpcService
   public synchronized void addAppLogLine(String requestId, long time, int level, String message)
   {
     return;
-    if (message == null)
-    {
-      return;
-    }
-    LogServicePb.LogLine line = new LogServicePb.LogLine();
-    line.setTime(time);
-    line.setLevel(level);
-    line.setLogMessage(message);
-
-    // Send the log to the Admin Console for later viewing
-    HashMap<String, Object> logHash = new HashMap<String, Object>();
-    logHash.put("timestamp", time / 1e6);
-    logHash.put("level", level);
-    logHash.put("message", message);
-    HashMap<String, Object>[] logList = new HashMap[1];
-    logList[0] = logHash;
-
-    Gson gson = new Gson();
-    HashMap<String, Object> data = new HashMap<String, Object>();
-    data.put("service_name", System.getProperty("APPLICATION_ID"));
-    data.put("logs", logList);
-    data.put("host", System.getProperty("MY_IP_ADDRESS"));
-
-    try {
-        String jsonData = gson.toJson(data);
-        String request = "https://" + System.getProperty("LOGIN_SERVER") + ":1443/logs/upload";
-        URL url = new URL(request); 
-        URLConnection connection = url.openConnection();
-        connection.setDoOutput(true);
-
-        OutputStreamWriter writer = new OutputStreamWriter(connection.getOutputStream());
-
-        writer.write(jsonData);
-        writer.flush();
-
-        BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream()));
-
-        writer.close();
-        reader.close();
-    } catch (IOException e) {
-        System.out.println("[IOException] Failed to execute REST call to save log: " + e.getMessage());
-    } catch (CallNotFoundException e) {
-        // This is commented out because otherwise it floods the logs.
-        //System.out.println("[CallNotFoundException] Failed to execute REST call to save log: " + e.getMessage());
-    }
-
-    LogServicePb.RequestLog log = findLogInLogMapOrAddNewLog(requestId);
-    log.addLine(line);
+//    if (message == null)
+//    {
+//      return;
+//    }
+//    LogServicePb.LogLine line = new LogServicePb.LogLine();
+//    line.setTime(time);
+//    line.setLevel(level);
+//    line.setLogMessage(message);
+//
+//    // Send the log to the Admin Console for later viewing
+//    HashMap<String, Object> logHash = new HashMap<String, Object>();
+//    logHash.put("timestamp", time / 1e6);
+//    logHash.put("level", level);
+//    logHash.put("message", message);
+//    HashMap<String, Object>[] logList = new HashMap[1];
+//    logList[0] = logHash;
+//
+//    Gson gson = new Gson();
+//    HashMap<String, Object> data = new HashMap<String, Object>();
+//    data.put("service_name", System.getProperty("APPLICATION_ID"));
+//    data.put("logs", logList);
+//    data.put("host", System.getProperty("MY_IP_ADDRESS"));
+//
+//    try {
+//        String jsonData = gson.toJson(data);
+//        String request = "https://" + System.getProperty("LOGIN_SERVER") + ":1443/logs/upload";
+//        URL url = new URL(request); 
+//        URLConnection connection = url.openConnection();
+//        connection.setDoOutput(true);
+//
+//        OutputStreamWriter writer = new OutputStreamWriter(connection.getOutputStream());
+//
+//        writer.write(jsonData);
+//        writer.flush();
+//
+//        BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream()));
+//
+//        writer.close();
+//        reader.close();
+//    } catch (IOException e) {
+//        System.out.println("[IOException] Failed to execute REST call to save log: " + e.getMessage());
+//    } catch (CallNotFoundException e) {
+//        // This is commented out because otherwise it floods the logs.
+//        //System.out.println("[CallNotFoundException] Failed to execute REST call to save log: " + e.getMessage());
+//    }
+//
+//    LogServicePb.RequestLog log = findLogInLogMapOrAddNewLog(requestId);
+//    log.addLine(line);
   }
 
   private synchronized LogServicePb.RequestLog findLogInLogMapOrAddNewLog(String requestId) {
