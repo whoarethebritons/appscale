@@ -25,6 +25,9 @@ import monit_app_configuration
 import monit_interface
 import misc
 
+# Local host path for datastore.
+DATASTORE_PATH = "localhost"
+
 # Most attempts to see if an application server comes up before failing
 MAX_FETCH_ATTEMPTS = 7
 
@@ -57,6 +60,9 @@ TRUSTED_FLAG = "--trusted"
 
 # The location on the filesystem where the PHP executable is installed.
 PHP_CGI_LOCATION = "/usr/local/php-5.4.15/installdir/bin/php-cgi"
+
+# Load balancing path for datastore.
+DATASTORE_PATH = "localhost"
 
 def convert_config_from_json(config):
   """ Takes the configuration in JSON format and converts it to a dictionary.
@@ -290,12 +296,7 @@ def choose_db_location(db_locations, port):
   Raise:
     ValueError: if there are no locations given in the args.
   """
-  if len(db_locations) == 0:
-    raise ValueError("DB locations " + \
-                     "were not correctly set: " + str(db_locations))
-
-  index = port % len(db_locations)
-  return db_locations[index]
+  return DATASTORE_PATH
 
 def create_python_app_env(public_ip, app_name):
   """ Returns the environment variables the python application server uses.
