@@ -85,6 +85,8 @@ TOMBSTONE = "APPSCALE_SOFT_DELETE"
 # Local datastore location through nginx.
 LOCAL_DATASTORE = "localhost:8888"
 
+# Global stats
+STATS = {}
 
 def clean_app_id(app_id):
   """ Google App Engine uses a special prepended string to signal that it
@@ -3595,7 +3597,7 @@ class MainHandler(tornado.web.RequestHandler):
     """ Handles get request for the web server. Returns that it is currently
         up in json.
     """
-    self.write('{"status":"up"}')
+    self.write(str(STATS))
     self.finish() 
 
   def remote_request(self, app_id, http_request_data):
@@ -3625,6 +3627,7 @@ class MainHandler(tornado.web.RequestHandler):
       apirequest.clear_request()
     method = apirequest.method()
     http_request_data = apirequest.request()
+    start = time.time()
     logging.info("Request type:{0}".format(method))
     if method == "Put":
       response, errcode, errdetail = self.put_request(app_id, 
@@ -3667,7 +3670,19 @@ class MainHandler(tornado.web.RequestHandler):
     else:
       errcode = datastore_pb.Error.BAD_REQUEST 
       errdetail = "Unknown datastore message" 
-      
+
+    time_taken = time.time() - start
+
+    if method in STATS:
+      if errcode in STATS[method]:
+        prev_req, pre_time = STATS[method][errcode]
+        STATS[method][errcode] = prev_req + 1, pre_time + time_taken
+      else:
+        STATS[method][errcode] = (1, time_taken)
+    else:
+      STATS[method] = {}
+      STATS[method][errcode] = (1, time_taken)
+
     apiresponse.set_response(response)
     if errcode != 0:
       apperror_pb = apiresponse.mutable_application_error()
