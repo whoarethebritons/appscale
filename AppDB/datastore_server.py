@@ -85,7 +85,7 @@ TOMBSTONE = "APPSCALE_SOFT_DELETE"
 # Local datastore location through nginx.
 LOCAL_DATASTORE = "localhost:8888"
 
-# Global stats
+# Global stats.
 STATS = {}
 
 def clean_app_id(app_id):
