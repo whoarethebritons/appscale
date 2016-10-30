@@ -32,7 +32,7 @@ import logging_capnp
 class LogServiceStub(apiproxy_stub.APIProxyStub):
   """Python stub for Log Service service."""
 
-  _LOGSERVER_PATH = '/tmp/logserver.socket'
+  _LOGSERVER_PATH = '/tmp/.appscale_logserver'
 
   THREADSAFE = True
 
