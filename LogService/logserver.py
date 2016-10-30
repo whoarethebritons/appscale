@@ -112,3 +112,4 @@ class LogServerFactory(protocol.Factory):
         self.size = size
         self.apps = defaultdict(AppRegistry)
 
+print "loaded"
