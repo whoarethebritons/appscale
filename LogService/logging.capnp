@@ -1,7 +1,7 @@
 @0xe5659228c7bbd12c;
 
 struct AppLog {
-  time @0 :Float32;
+  time @0 :Int64;
   level @1 :Int8;
   message @2 :Text;
   sourceLocation @3: Text;
@@ -16,9 +16,9 @@ struct RequestLog {
   offset @5 :Data;
   ip @6: Text;
   nickname @7: Text;
-  startTime @8: Float64;
-  endTime @9: Float64;
-  latency @10: Float64;
+  startTime @8: Int64;
+  endTime @9: Int64;
+  latency @10: Int32;
   mcycles @11: Int32;
   method @12: Text;
   resource @13: Text;
