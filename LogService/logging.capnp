@@ -23,7 +23,7 @@ struct RequestLog {
   method @12: Text;
   resource @13: Text;
   httpVersion @14: Text;
-  status @15: Text;
+  status @15: Int16;
   responseSize @16: Int32;
   referrer @17: Text;
   userAgent @18: Text;
