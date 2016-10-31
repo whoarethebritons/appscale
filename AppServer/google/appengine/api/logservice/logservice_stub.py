@@ -19,6 +19,7 @@
 import time
 import os
 import socket
+import struct
 from collections import defaultdict
 
 import capnp
@@ -63,10 +64,10 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
     key = (blocking, app_id)
     if key in self._log_server:
       return self._log_server[key]
-    if os.path.exists(_LOGSERVER_PATH):
+    if os.path.exists(LogServiceStub._LOGSERVER_PATH):
       client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
       try:
-        client.connect(_LOGSERVER_PATH)
+        client.connect(LogServiceStub._LOGSERVER_PATH)
         client.setblocking(blocking)
         client.send('a%s%s' % (struct.pack('I', len(app_id)), app_id)) 
         self._log_server[key] = client
@@ -85,7 +86,7 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
         pass
       del self._log_server[key]
 
-  def _send_to_logserver(self, api_id, packet):
+  def _send_to_logserver(self, app_id, packet):
     log_server = self._get_log_server(app_id, False)
     if log_server:
       try:
@@ -141,7 +142,7 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
     rl.startTime = start_time
     rl.method = method
     rl.resource = resource
-    rl.httpVersion = htpp_version
+    rl.httpVersion = http_version
     rl.userAgent = user_agent
     rl.host = host
     self._pending_requests_applogs[request_id] = rl.init_resizable_list('appLogs')
@@ -162,7 +163,7 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
       end_time = self._get_time_usec()
     rl = self._pending_requests.get(request_id, None)
     if rl is None:
-        raise ValueError('Expected LogRequest object in cache!')  # Crash as this should not happen.
+      return
     rl.status = status
     rl.responseSize = response_size
     rl.endTime = end_time
@@ -177,7 +178,7 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
     """Writes application-level log messages for a request."""
     rl = self._pending_requests.get('request_id', None)
     if rl is None:
-        raise ValueError('Expected LogRequest object in cache!')  # Crash as this should not happen.
+      return
     time, level, message = request
     al = self._pending_requests_applogs[request_id].add()
     al.time = time

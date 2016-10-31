@@ -5,7 +5,7 @@ from zope.interface import implementer
 from twisted.python import usage
 from twisted.plugin import IPlugin
 from twisted.application.service import IServiceMaker
-from twisted.application import internet
+from twisted.application import internet, service
 
 from logserver import LogServerFactory
 
@@ -32,7 +32,8 @@ class MyServiceMaker(object):
     tcp_news_server = internet.TCPServer(int(options["port"]), logserver_factory)
     tcp_news_server.setServiceParent(application)
 
-    os.remove(options["unix_socket"])
+    if os.path.exists(options["unix_socket"]):
+      os.remove(options["unix_socket"])
     unix_news_server = internet.UNIXServer(options["unix_socket"], logserver_factory)
     unix_news_server.setServiceParent(application)
 
