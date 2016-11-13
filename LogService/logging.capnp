@@ -9,11 +9,11 @@ struct AppLog {
 
 struct RequestLog {
   fileOnDisk @0 : Text;
-  appId @1 :Text;
-  moduleId @2 :Text;
-  versionId @3 :Text;
-  requestId @4 :Data;
-  offset @5 :Data;
+  appId @1 : Text;
+  moduleId @2 : Text;
+  versionId @3 : Text;
+  requestId @4 : Data;
+  offset @5 : Data;
   ip @6: Text;
   nickname @7: Text;
   startTime @8: Int64;
@@ -42,3 +42,13 @@ struct RequestLog {
   appEngineRelease @31: Text;
 }
     
+struct Query {
+  startTime @0 : Int64;
+  endTime @1 : Int64;
+  offset @2 : Data;
+  minimumLogLevel @3 : Int8;
+  includeAppLogs @4 : Bool;
+  versionIds @5 : List(Text);
+  requestIds @6 : List(Data);
+  count @7 : Int32;
+}

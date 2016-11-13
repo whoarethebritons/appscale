@@ -20,6 +20,7 @@ import time
 import os
 import socket
 import struct
+from Queue import Queue, Empty
 from collections import defaultdict
 
 import capnp
@@ -29,6 +30,8 @@ from google.appengine.api.logservice import log_service_pb
 from google.appengine.runtime import apiproxy_errors
 
 import logging_capnp
+
+_I_SIZE = struct.calcsize('I')
 
 class LogServiceStub(apiproxy_stub.APIProxyStub):
   """Python stub for Log Service service."""
@@ -58,42 +61,64 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
                                          request_data=request_data)
     self._pending_requests = defaultdict(logging_capnp.RequestLog.new_message)
     self._pending_requests_applogs = dict()
-    self._log_server = dict()
+    self._log_server = defaultdict(Queue)
 
   def _get_log_server(self, app_id, blocking):
     key = (blocking, app_id)
-    if key in self._log_server:
-      return self._log_server[key]
+    queue = self._log_server[key]
+    try:
+      return key, queue.get(False)
+    except Empty:
+      pass
     if os.path.exists(LogServiceStub._LOGSERVER_PATH):
       client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
       try:
         client.connect(LogServiceStub._LOGSERVER_PATH)
         client.setblocking(blocking)
         client.send('a%s%s' % (struct.pack('I', len(app_id)), app_id)) 
-        self._log_server[key] = client
-        return client
+        return key, client
       except socket.error, e:
-        return None
-    return None
+        return None, None
+    return None, None
 
-  def _cleanup_logserver_connection(app_id, blocking):
-    key = (blocking, app_id)
-    log_server = self._log_server.get(key)
-    if log_server:
-      try:
-        log_server.close()
-      except socker.error:
-        pass
-      del self._log_server[key]
+  def _release_logserver_connection(self, key, connection):
+    queue = self._log_server[key]
+    queue.put(connection)
+
+  def _cleanup_logserver_connection(self, connection):
+    try:
+      connection.close()
+    except socker.error:
+      pass
 
   def _send_to_logserver(self, app_id, packet):
-    log_server = self._get_log_server(app_id, False)
+    key, log_server = self._get_log_server(app_id, False)
     if log_server:
       try:
         log_server.send(packet)
+        _release_logserver_connection(key, connection)
       except socket.error, e:
-        self._cleanup_logserver_connection(app_id, False)
-        self._send_to_logserver(app_id, type_, packet)
+        self._cleanup_logserver_connection(key, connection)
+        self._send_to_logserver(app_id, packet)
+        
+  def _query_log_server(self, app_id, packet):
+    key, log_server = self._get_log_server(app_id, True)
+    if not log_server:
+      raise apiproxy_errors.ApplicationError(
+          log_service_pb.LogServiceError.STORAGE_ERROR)
+    try:
+      log_server.send(packet)
+      with log_server.makefile('rb') as fh:
+        buf = fh.read(_I_SIZE)
+        count, = struct.unpack('I', buf)
+        for _ in xrange():
+          buf = fh.read(_I_SIZE)
+          length, = struct.unpack('I', buf)
+          yield fh.read(length)
+      _release_logserver_connection(key, connection)
+    except socket.error, e:
+      self._cleanup_logserver_connection(key, connection)
+      raise
 
   @staticmethod
   def _get_time_usec():
@@ -202,76 +227,77 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
          request.has_offset())):
       raise apiproxy_errors.ApplicationError(
           log_service_pb.LogServiceError.INVALID_REQUEST)
-
+      
+    rl = self._pending_requests.get(request_id, None)
+    if rl is None:
+      raise apiproxy_errors.ApplicationError(
+          log_service_pb.LogServiceError.INVALID_REQUEST)
+      
+    query = logging_capnp.Query.new_message()
+    if request.has_start_time():
+      query.startTime = request.start_time()
+    if request.has_end_time():
+      query.endTime = request.end_time()
+    if request.has_offset():
+      query.offset = request.offset()
+    if request.has_minimum_log_level():
+      query.minimumLogLevel = request.minimum_log_level()
+    query.include_app_logs = request.include_app_logs()
+    query.versionIds = request.version_id_list()
     if request.request_id_size():
-      for request_id in request.request_id_list():
-        log_row = self._conn.execute(
-            'SELECT * FROM RequestLogs WHERE user_request_id = ?',
-            (request_id,)).fetchone()
-        if log_row:
-          log = response.add_log()
-          self._fill_request_log(log_row, log, request.include_app_logs())
-      return
-
-    if request.has_count():
+      query.requestIds = request.request_id_list()
+    if request.has_count() and request.count() < self._DEFAULT_READ_COUNT:
       count = request.count()
     else:
       count = self._DEFAULT_READ_COUNT
-    filters = self._extract_read_filters(request)
-    filter_string = ' WHERE %s' % ' and '.join(f[0] for f in filters)
-
-    if request.has_minimum_log_level():
-      query = ('SELECT * FROM RequestLogs INNER JOIN AppLogs ON '
-               'RequestLogs.id = AppLogs.request_id%s GROUP BY '
-               'RequestLogs.id ORDER BY id DESC')
-    else:
-      query = 'SELECT * FROM RequestLogs%s ORDER BY id DESC'
-    logs = self._conn.execute(query % filter_string,
-                              tuple(f[1] for f in filters)).fetchmany(count + 1)
-    for log_row in logs[:count]:
+    query.count = count
+    
+    # Perform query to logserver
+    buf = query.to_bytes()
+    packet = 'q%s%s' % (struct.pack('I', len(buf)), buf)
+    for bytes in self._query_log_server(rl.appId, packet):
+      requestLog = logging_capnp.RequestLog.from_bytes(bytes)
       log = response.add_log()
-      self._fill_request_log(log_row, log, request.include_app_logs())
-    if len(logs) > count:
-      response.mutable_offset().set_request_id(str(logs[-2]['id']))
+      self._fill_request_log(requestLog, log, request.include_app_logs())
 
-  def _fill_request_log(self, log_row, log, include_app_logs):
-    log.set_request_id(str(log_row['user_request_id']))
-    log.set_app_id(log_row['app_id'])
-    log.set_version_id(log_row['version_id'])
-    log.set_ip(log_row['ip'])
-    log.set_nickname(log_row['nickname'])
-    log.set_start_time(log_row['start_time'])
-    log.set_host(log_row['host'])
-    log.set_end_time(log_row['end_time'])
-    log.set_method(log_row['method'])
-    log.set_resource(log_row['resource'])
-    log.set_status(log_row['status'])
-    log.set_response_size(log_row['response_size'])
-    log.set_http_version(log_row['http_version'])
-    log.set_user_agent(log_row['user_agent'])
-    log.set_url_map_entry(log_row['url_map_entry'])
-    log.set_latency(log_row['latency'])
-    log.set_mcycles(log_row['mcycles'])
-    log.set_finished(log_row['finished'])
-    log.mutable_offset().set_request_id(str(log_row['id']))
-    time_seconds = (log_row['end_time'] or log_row['start_time']) / 10**6
+    if len(logs) = count:
+      response.mutable_offset().set_request_id(requestLog.offset)
+
+  def _fill_request_log(self, requestLog, log, include_app_logs):
+    log.set_request_id(requestLog.requestId)
+    log.set_app_id(requestLog.appId)
+    log.set_version_id(requestLog.versionId)
+    log.set_ip(requestLog.ip)
+    log.set_nickname(requestLog.nickname)
+    log.set_start_time(requestLog.startTime)
+    log.set_host(requestLog.host)
+    log.set_end_time(requestLog.endTime)
+    log.set_method(requestLog.method)
+    log.set_resource(requestLog.resource)
+    log.set_status(requestLog.status)
+    log.set_response_size(requestLog.responseSize)
+    log.set_http_version(requestLog.httpVersion)
+    log.set_user_agent(requestLog.userAgent)
+    log.set_url_map_entry(requestLog.urlMapEntry)
+    log.set_latency(requestLog.latency)
+    log.set_mcycles(requestLog.mcycles)
+    log.set_finished(requestLog.finised)
+    
+    log.mutable_offset().set_request_id(requestLog.offset)
+    time_seconds = (requestLog.endTime or requestLog.startTime) / 10**6
     date_string = time.strftime('%d/%b/%Y:%H:%M:%S %z',
                                 time.localtime(time_seconds))
     log.set_combined('%s - %s [%s] "%s %s %s" %d %d - "%s"' %
-                     (log_row['ip'], log_row['nickname'], date_string,
-                      log_row['method'], log_row['resource'],
-                      log_row['http_version'], log_row['status'] or 0,
-                      log_row['response_size'] or 0, log_row['user_agent']))
+                     (requestLog.ip, requestLog.nickname, date_string,
+                      requestLog.method, requestLog.resource,
+                      requestLog.httpVersion, requestLog.status or 0,
+                      requestLog.responseSize or 0, requestLog.userAgent))
     if include_app_logs:
-      log_messages = self._conn.execute(
-          'SELECT timestamp, level, message FROM AppLogs '
-          'WHERE request_id = ?',
-          (log_row['id'],)).fetchall()
-      for message in log_messages:
+      for appLog in requestLog.appLogs:
         line = log.add_line()
-        line.set_time(message['timestamp'])
-        line.set_level(message['level'])
-        line.set_log_message(message['message'])
+        line.set_time(appLog.time)
+        line.set_level(appLog.level)
+        line.set_log_message(appLog.message)
 
   @staticmethod
   def _extract_read_filters(request):
