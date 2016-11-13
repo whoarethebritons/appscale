@@ -1,6 +1,7 @@
 import struct
 import os
 import re
+import time
 from collections import defaultdict
 from cStringIO import StringIO
 
@@ -9,99 +10,307 @@ import logging_capnp
 
 from twisted.internet import reactor, protocol
 from twisted.python import log
+from pip.cmdoptions import log_file
 
-MAX_LOG_FILE_SIZE = 1024 * 1024 * 1024
+MAX_LOG_FILE_SIZE = 100 * 1024 * 1024
+MAX_REQUEST_ID_CACHE = 1000000 # Latest MAX_REQUEST_ID_CACHE of requests will be kept in the index
+
+_I_SIZE = struct.calcsize('I')
+_qI_SIZE = struct.calcsize('qI')
+_PAGE_SIZE = 250
+
+def readLogRecord(handle, parse=False):
+  bytes = handle.read(_I_SIZE)
+  if not bytes:
+    return (None, None) if parse else None
+  length, = struct.unpack('I', bytes)
+  bytes = handle.read(length)
+  return (bytes, logging_capnp.RequestLog.from_bytes(bytes)) if parse else None
+
+def calculateOffset(log_file_id, position):
+  return struct.pack('HI', log_file_id, position)
+
+def parseOffset(offset):
+  return struct.unpack('HI', offset)
+
+class AppLogFile(object):
+  MODE_SEARCH = 1
+  MODE_WRITE = 2
+
+  def __init__(self, root_path, app_id, log_file_id, mode):
+    self.mode = mode
+    self.log_file_id = log_file_id
+    self._filename = os.path.join(root_path, 'logservice_%s.%s.log' % (app_id, log_file_id))
+    self._requestIdIndexFilename = '%s.ridx' % self._filename
+    self._pageIndexFilename = '%s.pidx' % self._filename
+    if mode == AppLogFile.MODE_WRITE:
+      self._handle = open(self._filename, 'ab')
+      self._pageIndexHandle = open(self._pageIndexFilename, 'ab')
+      self._requestIdIndexHandle = open(self._requestIdIndexFilename, 'ab')
+      self._indexSize = self._requestIdIndexHandle.tell() / 14
+    else:
+      self._handle = open(self._filename, 'rb')
+      self._requestIdIndexHandle = open(self._requestIdIndexFilename, 'rb')
+
+  def close(self):
+    self._handle.close()
+    self._pageIndexHandle.close()
+    self._requestIdIndexFilename.close()
+
+  def write(self, buf):
+    if self.mode != AppLogFile.MODE_WRITE:
+      raise ValueError("Cannot write to AppLogFile in search mode")
+    position = self._handle.tell()
+    offset = calculateOffset(self.log_file_id, position)
+    requestLog = logging_capnp.RequestLog.from_bytes(buf).as_builder()
+    requestLog.offset = offset
+    buf = requestLog.to_bytes()
+    self._handle.write('%s%s' % (struct.pack('I', len(buf)), bytes))
+    # Index the new logline
+    self._requestIdIndexHandle.write('%s%s' % (requestLog.requestId, struct.pack('I', position)))
+    if self._indexSize % _PAGE_SIZE == 0:
+      self._pageIndexHandle.write(struct.pack('qI', requestLog.endTime, position))
+      self._pageIndexHandle.flush()
+      self._handle.flush()
+      self._requestIdIndexHandle.flush()
+    self._indexSize += 1
+    return position
+
+  def get(self, requestIds):
+    if self.mode == AppLogFile.MODE_WRITE:
+      current_pos_handle = self._handle.tell()
+      current_pos_index_handle = self._requestIdIndexHandle.tell()
+    results_found = 0
+    self._requestIdIndexHandle.seek(0)
+    while True:
+      buf = self._requestIdIndexHandle.read(14000)
+      if not buf:
+        break
+      i = 0
+      while True:
+        key = buf[i:i+10]
+        if not key:
+          break
+        if key in requestIds:
+          requestIds.remove(key)
+          position = struct.unpack('I', buf[i+10:i+14])
+          self._handle.seek(position)
+          record = readLogRecord(self._handle, False)
+          yield key, record
+          if not requestIds:
+            break
+        i += 14
+        if not requestIds:
+          break
+    if self.mode == AppLogFile.MODE_WRITE:
+      self._handle.seek(current_pos_handle)
+      self._requestIdIndexHandle.seek(current_pos_index_handle)
+
+  def iterpages(self):
+    if self.mode == AppLogFile.MODE_WRITE:
+      current_pos = self._pageIndexHandle.tell()
+    self._pageIndexHandle.seek(0)
+    pages = self._pageIndexHandle.read()
+    if self.mode == AppLogFile.MODE_WRITE:
+      self._handle.seek(current_pos)
+    for pos in xrange(len(pages)-_qI_SIZE, -1, -_qI_SIZE):
+      yield struct.unpack('qI', pages[pos:pos+_qI_SIZE])
+
+  def iterrecords(self, start_position, end_position):
+    if self.mode == AppLogFile.MODE_WRITE:
+      current_pos = self._handle.tell()
+    self._handle.seek(start_position)
+    if end_position != -1:
+      buf = self._handle.read(end_position - start_position)
+    else:
+      buf = self._handle.read()
+    if self.mode == AppLogFile.MODE_WRITE:
+      self._handle.seek(current_pos)
+    pos = 0
+    while True:
+      bytes = buf[pos:pos+_I_SIZE]
+      pos += _I_SIZE
+      if not bytes:
+        break
+      length, = struct.unpack('I', bytes)
+      bytes = buf[pos:pos+length]
+      pos += length
+      yield bytes, logging_capnp.RequestLog.from_bytes(bytes)
 
 class AppRegistry(object):
 
-    def __init__(self):
-        self.logfiles = []
-        self.writeHandle = None
-        self.indexRequestIds = dict()
-        self.indexRequestTime = defaultdict(StringIO)
+  def __init__(self, root_path, app_id):
+    self._app_id = app_id
+    self._root_path = root_path
+    self._log_files = list()
+    ids = [0]
+    for f in os.listdir(root_path):
+      m = re.match('^logservice_%s\\.(\\d+)\\.log$' % app_id, f)
+      if not m:
+        continue
+      log_file_id = int(m.groups()[0])
+      ids.append(log_file_id)
+      self._log_files.append(AppLogFile(root_path, app_id, log_file_id,
+                                        AppLogFile.MODE_SEARCH))
+    self._log_files.sort(key=lambda x: x.log_file_id)
+    self._writer = AppLogFile(root_path, app_id, max(ids) + 1, AppLogFile.MODE_WRITE)
+
+  def write(self, buf):
+    position = self._writer.write(buf)
+    if position > MAX_LOG_FILE_SIZE:
+      self._writer.close()
+      self._log_files.append(AppLogFile(self._root_path, self._app_id,
+                                        self._writer.log_file_id,
+                                        AppLogFile.MODE_SEARCH))
+      self._writer = AppLogFile(root_path, self._app_id,
+                                self._writer.log_file_id + 1,
+                                AppLogFile.MODE_WRITE)
+
+  def iter(self):
+    yield self._writer
+    for alf in reversed(self._log_files):
+      yield alf
+
+  def get(self, requestIds):
+    lookupRequestIds = list(requestIds)
+    for alf in self.iter():
+      if not lookupRequestIds:
+        break
+      for requestId, record in alf.get(lookupRequestIds):
+        yield requestId, record
+
+  def iterpages(self):
+    for alf in self.iter():
+      for endTime, position in alf.iterpages():
+         yield endTime, position, alf
 
 class Protocol(protocol.Protocol):
 
-    def __init__(self):
-        self.buf = ''
-        self.app_id = None
-        self.app_registry = None
+  def __init__(self):
+    self.buf = ''
+    self.app_id = None
+    self.app_registry = None
 
-    def dataReceived(self, data):
-        self.buf += data
-        self.processActions()
+  def dataReceived(self, data):
+    self.buf += data
+    self.processActions()
 
-    def processActions(self):
-        buffer_size = len(self.buf)
-        if buffer_size < 5:
-            return
-        action = self.buf[0]
-        query_length, = struct.unpack('I', self.buf[1:5])
-        query_end = query_length + 5;
-        if buffer_size < query_end:
-            return
-        query = self.buf[5:query_end]
-        processor = self.ACTIONS.get(action)
-        if processor:
-            processor(self, query)
-        else:
-            log.error("Received unknown action %s", action)
-            self.transport.loseConnection()
-        self.buf = self.buf[query_end:]
+  def processActions(self):
+    buffer_size = len(self.buf)
+    if buffer_size < 5:
+      log.error("First action should be set_app_id. Loosing connection.", action)
+      self.transport.loseConnection()
+      return
+    action = self.buf[0]
+    if not self.app_id and action != 'a': # First command should set_app_id
+      log.error("Received unknown action %s", action)
+      self.transport.loseConnection()
+      return
+    query_length, = struct.unpack('I', self.buf[1:5])
+    query_end = query_length + 5;
+    if buffer_size < query_end:
+      return
+    query = self.buf[5:query_end]
+    processor = self.ACTIONS.get(action)
+    if processor:
+      processor(self, query)
+    else:
+      log.error("Received unknown action %s", action)
+      self.transport.loseConnection()
+      return
+    self.buf = self.buf[query_end:]
 
-    def processSetAppId(self, query):
-        # Set our app_id
-        self.app_id = query
-        # Rebuild in memory indexes
-        self.app_registry = self.factory.apps[self.app_id]
-        self.app_registry.log_files = [f for f in os.listdir(self.factory.path) if re.match('^logservice_%s\\.\\d+\\.log$' % self.app_id, f)]
-        self.app_registry.log_files.sort(key=lambda x: int(re.match('^logservice_%s\\.(\\d+)\\.log$' % self.app_id, x).groups()[0]))
-        log_file_index = 0
-        for log_file in self.app_registry.log_files:
-            log_file_index += 1
-            with open(os.path.join(self.factory.path, logfile), 'rb') as fh:
-                position = 0
-                while True:
-                   buf = fh.read(4)
-                   if not buf:
-                       break
-                   record_length, = struct.unpack('I', buf)
-                   buf = fh.read(record_length)
-                   record = logging_capnp.RequestLog.from_bytes(buf)
-                   self.index(log_file_index, position, record)
-                   position += 4 + len(buf)
+  def processSetAppId(self, query):
+    # Set our app_id
+    self.app_id = query
+    if self.app_id in self.factory.apps:
+      self.app_registry = self.factory.apps[self.app_id]
+      return
+    self.app_registry = AppRegistry(self.factory.path, self.app_id)
+    self.factory.apps[self.app_id] = self.app_registry
 
-    def index(self, log_file_index, position, record):
-        self.app_registry.indexRequestIds[record.requestId] = struct.pack('HI', log_file_index, position)
-        self.app_registry.indexRequestTime[int(record.startTime)].write(struct.pack('dHI', record.startTime, log_file_index, position))
+  def processActionLog(self, query):
+    self.app_registry.write(query)
 
+  def processActionQuery(self, query):
+    query = logging_capnp.Query.from_bytes(query)
+    if self.app_registry.writeHandle:
+      self.app_registry.writeHandle.flush()
+    if len(query.requestIds) > 0:
+      self.processActionQueryRequestIds(query.requestIds)
+    else:
+      self.processActionQuerySearch(query)
 
-    def processActionLog(self, query):
-        if not self.app_id:
-            log.error("Don't know what to do, because the client did not set the app_id yet! Closing the connection ...")
-            self.transport.loseConnection()
-            return
-        if not self.app_registry.writeHandle or self.app_registry.writeHandle.tell() > MAX_LOG_FILE_SIZE:
-            if not self.app_registry.logfiles:
-                self.app_registry.logfiles.append(os.path.join(self.factory.path, 'logservice_%s.1.log' % self.app_id))
-            fh = open(self.app_registry.logfiles[-1], 'ab')
-            if fh.tell() > MAX_LOG_FILE_SIZE:
-                fh.close()
-                next_logfile_id = int(re.match('/logservice_%s\\.(\\d+)\\.log$' % self.app_id, self.app_registry.logfiles[-1]).groups()[0]) + 1
-                self.app_registry.logfiles.append(os.path.join(self.factory.path, 'logservice_%s.%s.log' % (self.app_id, next_log_file_id)))
-                fh = open(self.app_registry.logfiles[-1], 'ab')
-            if self.app_registry.writeHandle:
-                self.app_registry.writeHandle.close()
-            self.app_registry.writeHandle = fh
-        position = self.app_registry.writeHandle.tell()
-        log_file_index = len(self.app_registry.logfiles) - 1
-        self.app_registry.writeHandle.write(struct.pack('I', len(query)))
-        self.app_registry.writeHandle.write(query)
-        self.app_registry.writeHandle.flush()
-        record = logging_capnp.RequestLog.from_bytes(query)
-        self.index(log_file_index, position, record)
-    
-    ACTIONS=dict(l=processActionLog, a=processSetAppId)
+  def processActionQuerySearch(self, query):
+    results = list()
+    versionIds = list(query.versionIds)
+    if query.offset:
+      query_log_file_id, query_position = parseOffset(query.offset)
+    oldestRecord = None
+    start = time.time()
+    previousALF = None
+    previousPosition = -1
+    for endTime, position, alf in self.app_registry.iterpages():
+      if query.endTime and query.endTime < endTime:
+        continue
+      if query.offset:
+        if alf.log_file_id > query_log_file_id and position > query_position:
+          continue
+      end_position = previousPosition if alf == previousALF else -1
+      for bytes, record in alf.iterrecords(position, end_position):
+        if not oldestRecord or oldestRecord.startTime > record.startTime:
+          oldestRecord = record
+        if query.endTime and query.endTime < endTime:
+          break
+        if query.offset:
+          log_file_id, position = parseOffset(record.offset)
+          if log_file_id == query_log_file_id and position >= query_position:
+            break
+        if query.minimumLogLevel:
+          include = False
+          for appLog in record.appLogs:
+            if appLog.level >= query.minimumLogLevel:
+              include = True
+              break
+          if not include:
+            continue
+        if not record.versionId in versionIds:
+          continue
+        if query.startTime and query.startTime > record.startTime:
+          continue
+        results.append((bytes, record))
+      if query.startTime and oldestRecord.endTime < query.startTime:
+        break
+      if len(results) >= query.count:
+        break
+      if results and time.time() - start > 5:
+        break
+      if time.time() - start > 25:
+        break
+      previousALF = alf
+      previousPosition = alf.position
+    results.sort(key=lambda _, record: record.endTime, reverse=True)
+    self.sendQueryResult([b for b, _ in results])
+
+  def processActionQueryRequestIds(self, requestIds):
+    results = dict()
+    for requestId, record in self.app_registry.get(requestIds):
+      results[requestId] = record
+    self.sendQueryResult([results.get(ri) for ri in requestIds])
+
+  def sendQueryResult(self, records):
+    self.transport.write(struct.pack('I', len(records)))
+    for record in records:
+      if record is None:
+        self.transport.write(struct.pack('I', 0))
+      else:
+        self.transport.write(struct.pack('I', len(record)))
+        self.transport.write(record)
+
+  def getLogFile(self, log_file_id):
+    return os.path.join(self.factory.path, 'logservice_%s.%s.log' % (self.app_id, log_file_id))
+
+  ACTIONS = dict(l=processActionLog, a=processSetAppId, q=processActionQuery)
 
 
 class LogServerFactory(protocol.Factory):
@@ -110,4 +319,4 @@ class LogServerFactory(protocol.Factory):
     def __init__(self, path, size):
         self.path = path
         self.size = size
-        self.apps = defaultdict(AppRegistry)
+        self.apps = dict()
