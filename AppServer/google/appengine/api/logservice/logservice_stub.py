@@ -260,7 +260,7 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
       log = response.add_log()
       self._fill_request_log(requestLog, log, request.include_app_logs())
 
-    if len(logs) = count:
+    if len(logs) == count:
       response.mutable_offset().set_request_id(requestLog.offset)
 
   def _fill_request_log(self, requestLog, log, include_app_logs):
