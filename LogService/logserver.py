@@ -108,24 +108,30 @@ class AppLogFile(object):
 
   def iterpages(self):
     if self.mode == AppLogFile.MODE_WRITE:
-      current_pos = self._pageIndexHandle.tell()
-    self._pageIndexHandle.seek(0)
-    pages = self._pageIndexHandle.read()
-    if self.mode == AppLogFile.MODE_WRITE:
-      self._handle.seek(current_pos)
+      self._pageIndexHandle.flush()
+      with open(self._pageIndexFilename, 'rb') as fh:
+        pages = fh.read()
+    else:
+      self._pageIndexHandle.seek(0)
+      pages = self._pageIndexHandle.read()
     for pos in xrange(len(pages)-_qI_SIZE, -1, -_qI_SIZE):
       yield struct.unpack('qI', pages[pos:pos+_qI_SIZE])
 
   def iterrecords(self, start_position, end_position):
     if self.mode == AppLogFile.MODE_WRITE:
-      current_pos = self._handle.tell()
-    self._handle.seek(start_position)
-    if end_position != -1:
-      buf = self._handle.read(end_position - start_position)
+      self._handle.flush()
+      handle = open(self._filename, 'rb')
     else:
-      buf = self._handle.read()
-    if self.mode == AppLogFile.MODE_WRITE:
-      self._handle.seek(current_pos)
+      handle = self._handle
+    try:
+      handle.seek(start_position)
+      if end_position != -1:
+        buf = handle.read(end_position - start_position)
+      else:
+        buf = handle.read()
+    finally:
+      if self.mode == AppLogFile.MODE_WRITE:
+        handle.close()
     pos = 0
     while True:
       bytes = buf[pos:pos+_I_SIZE]
@@ -196,14 +202,13 @@ class Protocol(protocol.Protocol):
     self.processActions()
 
   def processActions(self):
+    import pdb; pdb.set_trace()
     buffer_size = len(self.buf)
     if buffer_size < 5:
-      log.error("First action should be set_app_id. Loosing connection.", action)
-      self.transport.loseConnection()
       return
     action = self.buf[0]
     if not self.app_id and action != 'a': # First command should set_app_id
-      log.error("Received unknown action %s", action)
+      log.err("Received unknown action %s", action)
       self.transport.loseConnection()
       return
     query_length, = struct.unpack('I', self.buf[1:5])
@@ -215,7 +220,7 @@ class Protocol(protocol.Protocol):
     if processor:
       processor(self, query)
     else:
-      log.error("Received unknown action %s", action)
+      log.err("Received unknown action %s", action)
       self.transport.loseConnection()
       return
     self.buf = self.buf[query_end:]
@@ -234,8 +239,6 @@ class Protocol(protocol.Protocol):
 
   def processActionQuery(self, query):
     query = logging_capnp.Query.from_bytes(query)
-    if self.app_registry.writeHandle:
-      self.app_registry.writeHandle.flush()
     if len(query.requestIds) > 0:
       self.processActionQueryRequestIds(query.requestIds)
     else:
@@ -299,13 +302,15 @@ class Protocol(protocol.Protocol):
     self.sendQueryResult([results.get(ri) for ri in requestIds])
 
   def sendQueryResult(self, records):
-    self.transport.write(struct.pack('I', len(records)))
-    for record in records:
-      if record is None:
-        self.transport.write(struct.pack('I', 0))
-      else:
-        self.transport.write(struct.pack('I', len(record)))
-        self.transport.write(record)
+    with StringIO() as stream:
+      stream.write(struct.pack('I', len(records)))
+      for record in records:
+        if record is None:
+          stream.write(struct.pack('I', 0))
+        else:
+          stream.write(struct.pack('I', len(record)))
+          stream.write(record)
+      self.transport.write(stream.getvalue())
 
   def getLogFile(self, log_file_id):
     return os.path.join(self.factory.path, 'logservice_%s.%s.log' % (self.app_id, log_file_id))

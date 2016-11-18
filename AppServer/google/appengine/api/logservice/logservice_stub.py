@@ -96,9 +96,9 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
     if log_server:
       try:
         log_server.send(packet)
-        _release_logserver_connection(key, connection)
+        self._release_logserver_connection(key, log_server)
       except socket.error, e:
-        self._cleanup_logserver_connection(key, connection)
+        self._cleanup_logserver_connection(key, log_server)
         self._send_to_logserver(app_id, packet)
         
   def _query_log_server(self, app_id, packet):
@@ -115,9 +115,9 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
           buf = fh.read(_I_SIZE)
           length, = struct.unpack('I', buf)
           yield fh.read(length)
-      _release_logserver_connection(key, connection)
+      self._release_logserver_connection(key, log_server)
     except socket.error, e:
-      self._cleanup_logserver_connection(key, connection)
+      self._cleanup_logserver_connection(key, log_server)
       raise
 
   @staticmethod
