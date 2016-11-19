@@ -47,10 +47,11 @@ class AppLogFile(object):
       self._handle = open(self._filename, 'ab')
       self._pageIndexHandle = open(self._pageIndexFilename, 'ab')
       self._requestIdIndexHandle = open(self._requestIdIndexFilename, 'ab')
-      self._indexSize = self._requestIdIndexHandle.tell() / 14
     else:
       self._handle = open(self._filename, 'rb')
+      self._pageIndexHandle = open(self._pageIndexFilename, 'rb')
       self._requestIdIndexHandle = open(self._requestIdIndexFilename, 'rb')
+    self._indexSize = self._requestIdIndexHandle.tell() / 14
 
   def close(self):
     self._handle.close()
@@ -65,14 +66,14 @@ class AppLogFile(object):
     requestLog = logging_capnp.RequestLog.from_bytes(buf).as_builder()
     requestLog.offset = offset
     buf = requestLog.to_bytes()
-    self._handle.write('%s%s' % (struct.pack('I', len(buf)), bytes))
+    self._handle.write('%s%s' % (struct.pack('I', len(buf)), buf))
     # Index the new logline
     self._requestIdIndexHandle.write('%s%s' % (requestLog.requestId, struct.pack('I', position)))
     if self._indexSize % _PAGE_SIZE == 0:
       self._pageIndexHandle.write(struct.pack('qI', requestLog.endTime, position))
       self._pageIndexHandle.flush()
-      self._handle.flush()
-      self._requestIdIndexHandle.flush()
+    self._handle.flush()
+    self._requestIdIndexHandle.flush()
     self._indexSize += 1
     return position
 
@@ -199,22 +200,23 @@ class Protocol(protocol.Protocol):
 
   def dataReceived(self, data):
     self.buf += data
-    self.processActions()
+    while self.processActions():
+      continue
 
   def processActions(self):
-    import pdb; pdb.set_trace()
+    #import ipdb; ipdb.set_trace()
     buffer_size = len(self.buf)
     if buffer_size < 5:
-      return
+      return False
     action = self.buf[0]
     if not self.app_id and action != 'a': # First command should set_app_id
       log.err("Received unknown action %s", action)
       self.transport.loseConnection()
-      return
+      return False
     query_length, = struct.unpack('I', self.buf[1:5])
     query_end = query_length + 5;
     if buffer_size < query_end:
-      return
+      return False
     query = self.buf[5:query_end]
     processor = self.ACTIONS.get(action)
     if processor:
@@ -222,8 +224,9 @@ class Protocol(protocol.Protocol):
     else:
       log.err("Received unknown action %s", action)
       self.transport.loseConnection()
-      return
+      return False
     self.buf = self.buf[query_end:]
+    return True
 
   def processSetAppId(self, query):
     # Set our app_id
@@ -277,7 +280,7 @@ class Protocol(protocol.Protocol):
               break
           if not include:
             continue
-        if not record.versionId in versionIds:
+        if record.versionId and not record.versionId.split('.', 1)[0] in versionIds:
           continue
         if query.startTime and query.startTime > record.startTime:
           continue
@@ -291,8 +294,8 @@ class Protocol(protocol.Protocol):
       if time.time() - start > 25:
         break
       previousALF = alf
-      previousPosition = alf.position
-    results.sort(key=lambda _, record: record.endTime, reverse=True)
+      previousPosition = position
+    results.sort(key=lambda entry: entry[1].endTime, reverse=True)
     self.sendQueryResult([b for b, _ in results])
 
   def processActionQueryRequestIds(self, requestIds):
@@ -302,15 +305,16 @@ class Protocol(protocol.Protocol):
     self.sendQueryResult([results.get(ri) for ri in requestIds])
 
   def sendQueryResult(self, records):
-    with StringIO() as stream:
-      stream.write(struct.pack('I', len(records)))
-      for record in records:
-        if record is None:
-          stream.write(struct.pack('I', 0))
-        else:
-          stream.write(struct.pack('I', len(record)))
-          stream.write(record)
-      self.transport.write(stream.getvalue())
+    stream = StringIO()
+    stream.write(struct.pack('I', len(records)))
+    for record in records:
+      if record is None:
+        stream.write(struct.pack('I', 0))
+      else:
+        stream.write(struct.pack('I', len(record)))
+        stream.write(record)
+    self.transport.write(stream.getvalue())
+    stream.close()
 
   def getLogFile(self, log_file_id):
     return os.path.join(self.factory.path, 'logservice_%s.%s.log' % (self.app_id, log_file_id))
