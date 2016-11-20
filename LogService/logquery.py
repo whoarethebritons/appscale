@@ -4,6 +4,7 @@ import socket
 import struct
 import time
 import logging
+import sys
 from urlparse import urlparse
 
 import capnp
@@ -64,14 +65,45 @@ def output_appengine(record):
       else:
         print '   %s' % line
 
-OUT_REGISTER = dict(http=output_http, appengine=output_appengine)
+def output_plain(record):
+  for appLog in record.appLogs:
+    time_seconds = float(appLog.time) / 10**6
+    date_string = time.strftime('%d/%b/%Y:%H:%M:%S', time.localtime(time_seconds))
+    print '%s.%s %s' % (date_string, str(round(time_seconds % 1, 3))[2:], appLog.message)
+
+OUT_REGISTER = dict(http=output_http, appengine=output_appengine, plain=output_plain)
 
 def main(args):
-  outputter = OUT_REGISTER[args.format]
+  if args.mode == 'log':
+    log(args)
+  else:
+    query_or_follow(args)
+
+def log(args):
+  sock = get_connection(args)
+  try:
+    for line in sys.stdin:
+      time_usec = int(time.time() * 10**6)
+      m = logging_capnp.RequestLog.new_message()
+      m.appId = args.app_id
+      m.versionId = args.version
+      m.startTime = time_usec
+      m.endTime = time_usec
+      m.init('appLogs', 1)
+      m.appLogs[0].level = logging.INFO
+      m.appLogs[0].time = time_usec
+      m.appLogs[0].message = line.strip()
+      buf = m.to_bytes()
+      sock.send('l%s%s' % (struct.pack('I', len(buf)), buf))
+  finally:
+    sock.close()
+    
+def query_or_follow(args):
   start = time.time()
   record_count = 0
   offset = None
   sock = get_connection(args)
+  outputter = OUT_REGISTER[args.format]
   try:
     fh = sock.makefile()
     try:
@@ -111,8 +143,8 @@ if __name__ == '__main__':
   parser.add_argument('--end', type=int, nargs='?', help='end epoch timestamp')
   parser.add_argument('--ids', type=str, nargs='+', help='requestIds')
   parser.add_argument('--count', type=int, nargs='?', help='count', default=10)
-  parser.add_argument('--format', type=str, choices=['http', 'appengine'], nargs='?', help='output format', default='appengine')
-  parser.add_argument('--mode', type=str, choices=['query', 'follow'], nargs='?', help='mode', default='query')
+  parser.add_argument('--format', type=str, choices=['http', 'appengine', 'plain'], nargs='?', help='output format', default='appengine')
+  parser.add_argument('--mode', type=str, choices=['query', 'follow', 'log'], nargs='?', help='mode', default='query')
   args = parser.parse_args()
   #import pdb; pdb.set_trace()
   main(args)

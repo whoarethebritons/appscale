@@ -68,7 +68,8 @@ class AppLogFile(object):
     buf = requestLog.to_bytes()
     self._handle.write('%s%s' % (struct.pack('I', len(buf)), buf))
     # Index the new logline
-    self._requestIdIndexHandle.write('%s%s' % (requestLog.requestId, struct.pack('I', position)))
+    if requestLog.requestId:
+      self._requestIdIndexHandle.write('%s%s' % (requestLog.requestId, struct.pack('I', position)))
     if self._indexSize % _PAGE_SIZE == 0:
       self._pageIndexHandle.write(struct.pack('qI', requestLog.endTime, position))
       self._pageIndexHandle.flush()
