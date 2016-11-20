@@ -201,14 +201,16 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
 
   def _Dynamic_Flush(self, request, unused_response, request_id):
     """Writes application-level log messages for a request."""
-    rl = self._pending_requests.get('request_id', None)
+    rl = self._pending_requests.get(request_id, None)
     if rl is None:
       return
-    time, level, message = request
-    al = self._pending_requests_applogs[request_id].add()
-    al.time = time
-    al.level = level
-    al.message = message
+    group = log_service_pb.UserAppLogGroup(request.logs())
+    logs = group.log_line_list()
+    for log in logs:
+      al = self._pending_requests_applogs[request_id].add()
+      al.time = log.timestamp_usec()
+      al.level = log.level()
+      al.message = log.message()
 
   @apiproxy_stub.Synchronized
   def _Dynamic_Read(self, request, response, request_id):

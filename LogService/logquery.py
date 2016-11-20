@@ -3,6 +3,7 @@ import argparse
 import socket
 import struct
 import time
+import logging
 from urlparse import urlparse
 
 import capnp
@@ -53,7 +54,7 @@ def output_appengine(record):
   for appLog in record.appLogs:
     time_seconds = float(appLog.time) / 10**6
     date_string = time.strftime('%M:%S', time.localtime(time_seconds))
-    line = ' + %s.%s %s %s' % (date_string, round(time_seconds % 1, 3),
+    line = ' + %s.%s %s %s' % (date_string, str(round(time_seconds % 1, 3))[2:],
                                logging.getLevelName(appLog.level), appLog.message)
     n = MAX_LOG_LINE_LENGTH
     line_no = 0
