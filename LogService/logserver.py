@@ -17,6 +17,7 @@ MAX_LOG_FILE_SIZE = 1024 * 1024 * 1024
 _I_SIZE = struct.calcsize('I')
 _qI_SIZE = struct.calcsize('qI')
 _PAGE_SIZE = 1000
+_ONE_BINARY = struct.pack('I', 1)
 
 def readLogRecord(handle, parse=False):
   bytes = handle.read(_I_SIZE)
@@ -74,7 +75,7 @@ class AppLogFile(object):
       self._handle.flush()
       self._requestIdIndexHandle.flush()
     self._indexSize += 1
-    return position
+    return position, requestLog
 
   def get(self, requestIds):
     if self.mode == AppLogFile.MODE_WRITE:
@@ -153,6 +154,7 @@ class AppLogFile(object):
 class AppRegistry(object):
 
   def __init__(self, root_path, app_id):
+    self._followers = dict()
     self._app_id = app_id
     self._root_path = root_path
     self._log_files = list()
@@ -169,7 +171,7 @@ class AppRegistry(object):
     self._writer = AppLogFile(root_path, app_id, max(ids) + 1, AppLogFile.MODE_WRITE)
 
   def write(self, buf):
-    position = self._writer.write(buf)
+    position, requestLog = self._writer.write(buf)
     if position > MAX_LOG_FILE_SIZE:
       self._writer.close()
       self._log_files.append(AppLogFile(self._root_path, self._app_id,
@@ -178,6 +180,7 @@ class AppRegistry(object):
       self._writer = AppLogFile(self._root_path, self._app_id,
                                 self._writer.log_file_id + 1,
                                 AppLogFile.MODE_WRITE)
+    self.broadcastToFollowers(requestLog, buf)
 
   def iter(self):
     yield self._writer
@@ -196,6 +199,28 @@ class AppRegistry(object):
     for alf in self.iter():
       for endTime, position in alf.iterpages():
          yield endTime, position, alf
+
+  def registerFollower(self, protocol, query):
+    self._followers[protocol] = query
+
+  def unregisterFollower(self, protocol):
+    if protocol in self._followers:
+      del self._followers[protocol]
+
+  def broadcastToFollowers(self, record, buf):
+    for protocol, query in self._followers.iteritems():
+      if query.minimumLogLevel:
+        include = False
+        for appLog in record.appLogs:
+          if appLog.level >= query.minimumLogLevel:
+            include = True
+            break
+        if not include:
+          continue
+      versionIds = list(query.versionIds)
+      if record.versionId and not record.versionId.split('.', 1)[0] in versionIds:
+        continue
+      protocol.transport.write('%s%s%s' % (_ONE_BINARY, struct.pack('I', len(buf)), buf))
 
 class Protocol(protocol.Protocol):
 
@@ -326,7 +351,15 @@ class Protocol(protocol.Protocol):
   def getLogFile(self, log_file_id):
     return os.path.join(self.factory.path, 'logservice_%s.%s.log' % (self.app_id, log_file_id))
 
-  ACTIONS = dict(l=processActionLog, a=processSetAppId, q=processActionQuery)
+  def processActionFollow(self, query):
+    query = logging_capnp.Query.from_bytes(query)
+    self.app_registry.registerFollower(self, query)
+
+  def connectionLost(self, reason=None):
+    if self.app_registry:
+      self.app_registry.unregisterFollower(self)
+
+  ACTIONS = dict(l=processActionLog, a=processSetAppId, q=processActionQuery, f=processActionFollow)
 
 
 class LogServerFactory(protocol.Factory):

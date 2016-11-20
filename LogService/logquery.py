@@ -76,9 +76,11 @@ def main(args):
     try:
       # send query
       while True:
-        buf = get_query(args, offset)
-        fh.write('q%s%s' % (struct.pack('I', len(buf)), buf))
-        fh.flush()
+        if args.mode == 'query' or offset is None:
+          buf = get_query(args, offset)
+          mode = 'q' if args.mode == 'query' else 'f'
+          fh.write('%s%s%s' % (mode, struct.pack('I', len(buf)), buf))
+          fh.flush()
         # receive results
         result_count, = struct.unpack('I', fh.read(_I_SIZE))
         if result_count == 0:
@@ -91,7 +93,7 @@ def main(args):
           if record_count == args.count:
             break
         offset = record.offset
-        if record_count == args.count or args.ids:
+        if args.mode == 'query' and (record_count == args.count or args.ids):
           break
     finally:
       fh.close()
@@ -109,6 +111,7 @@ if __name__ == '__main__':
   parser.add_argument('--ids', type=str, nargs='+', help='requestIds')
   parser.add_argument('--count', type=int, nargs='?', help='count', default=10)
   parser.add_argument('--format', type=str, choices=['http', 'appengine'], nargs='?', help='output format', default='appengine')
+  parser.add_argument('--mode', type=str, choices=['query', 'follow'], nargs='?', help='mode', default='query')
   args = parser.parse_args()
   #import pdb; pdb.set_trace()
   main(args)
