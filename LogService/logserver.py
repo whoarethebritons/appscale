@@ -12,12 +12,11 @@ from twisted.internet import reactor, protocol
 from twisted.python import log
 from pip.cmdoptions import log_file
 
-MAX_LOG_FILE_SIZE = 100 * 1024 * 1024
-MAX_REQUEST_ID_CACHE = 1000000 # Latest MAX_REQUEST_ID_CACHE of requests will be kept in the index
+MAX_LOG_FILE_SIZE = 1024 * 1024 * 1024
 
 _I_SIZE = struct.calcsize('I')
 _qI_SIZE = struct.calcsize('qI')
-_PAGE_SIZE = 250
+_PAGE_SIZE = 1000
 
 def readLogRecord(handle, parse=False):
   bytes = handle.read(_I_SIZE)
@@ -56,7 +55,7 @@ class AppLogFile(object):
   def close(self):
     self._handle.close()
     self._pageIndexHandle.close()
-    self._requestIdIndexFilename.close()
+    self._requestIdIndexHandle.close()
 
   def write(self, buf):
     if self.mode != AppLogFile.MODE_WRITE:
@@ -134,7 +133,7 @@ class AppLogFile(object):
       if self.mode == AppLogFile.MODE_WRITE:
         handle.close()
     pos = 0
-    while True:
+    while pos < len(buf):
       bytes = buf[pos:pos+_I_SIZE]
       pos += _I_SIZE
       if not bytes:
@@ -169,7 +168,7 @@ class AppRegistry(object):
       self._log_files.append(AppLogFile(self._root_path, self._app_id,
                                         self._writer.log_file_id,
                                         AppLogFile.MODE_SEARCH))
-      self._writer = AppLogFile(root_path, self._app_id,
+      self._writer = AppLogFile(self._root_path, self._app_id,
                                 self._writer.log_file_id + 1,
                                 AppLogFile.MODE_WRITE)
 
@@ -260,7 +259,9 @@ class Protocol(protocol.Protocol):
       if query.endTime and query.endTime < endTime:
         continue
       if query.offset:
-        if alf.log_file_id > query_log_file_id and position > query_position:
+        if alf.log_file_id > query_log_file_id:
+          continue
+        if alf.log_file_id == query_log_file_id and position > query_position:
           continue
       end_position = previousPosition if alf == previousALF else -1
       for bytes, record in alf.iterrecords(position, end_position):

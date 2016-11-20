@@ -8,6 +8,8 @@ from urlparse import urlparse
 import capnp
 import logging_capnp
 
+from io import BytesIO
+
 _I_SIZE = struct.calcsize('I')
 
 def get_connection(args):
@@ -23,38 +25,55 @@ def get_connection(args):
   sock.send('a%s%s' % (struct.pack('I', len(args.app_id)), args.app_id))
   return sock
 
-def get_query(args):
+def get_query(args, offset=None):
   query = logging_capnp.Query.new_message()
   if args.start:
     query.startTime = int(args.start)
   if args.end:
     query.endTime = int(args.end)
   query.versionIds = args.versions or []
-  query.count = args.count
+  query.count = 1000 if args.count >= 1000 else args.count
+  if offset:
+    query.offset = offset
   return query.to_bytes()
 
 def main(args):
   start = time.time()
+  record_count = 0
+  offset = None
   sock = get_connection(args)
   try:
-    # send query
-    buf = get_query(args)
-    sock.send('q%s%s' % (struct.pack('I', len(buf)), buf))
-    # receive results
-    result_count, = struct.unpack('I', sock.recv(_I_SIZE))
-    for _ in xrange(result_count):
-      buflen, = struct.unpack('I', sock.recv(_I_SIZE))
-      buf = sock.recv(buflen)
-      record = logging_capnp.RequestLog.from_bytes(buf)
-      time_seconds = (record.endTime or record.startTime) / 10**6
-      date_string = time.strftime('%d/%b/%Y:%H:%M:%S %z',
-                                  time.localtime(time_seconds))
-      print '%s - %s [%s] "%s %s %s" %d %d - "%s"' % (
-            record.ip, record.nickname, date_string, record.method, record.resource, 
-            record.httpVersion, record.status or 0, record.responseSize or 0, record.userAgent)
+    fh = sock.makefile()
+    try:
+      # send query
+      while True:
+        buf = get_query(args, offset)
+        fh.write('q%s%s' % (struct.pack('I', len(buf)), buf))
+        fh.flush()
+        # receive results
+        result_count, = struct.unpack('I', fh.read(_I_SIZE))
+        if result_count == 0:
+          break
+        for _ in xrange(result_count):
+          buflen, = struct.unpack('I', fh.read(_I_SIZE))
+          record = logging_capnp.RequestLog.from_bytes(fh.read(buflen))
+          time_seconds = (record.endTime or record.startTime) / 10**6
+          date_string = time.strftime('%d/%b/%Y:%H:%M:%S %z',
+                                      time.localtime(time_seconds))
+          print '%s - %s [%s] "%s %s %s" %d %d - "%s"' % (
+                record.ip, record.nickname, date_string, record.method, record.resource, 
+                record.httpVersion, record.status or 0, record.responseSize or 0, record.userAgent)
+          record_count += 1
+          if record_count == args.count:
+            break
+        offset = record.offset
+        if record_count == args.count:
+          break
+    finally:
+      fh.close()
   finally:
     sock.close()
-  print "Returned %s records in %s seconds" % (result_count, time.time() - start)
+  print "Returned %s records in %s seconds" % (record_count, time.time() - start)
 
 if __name__ == '__main__':
   parser = argparse.ArgumentParser(description='Query AppScale logserver.')
