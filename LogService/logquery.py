@@ -11,6 +11,7 @@ import logging_capnp
 from io import BytesIO
 
 _I_SIZE = struct.calcsize('I')
+MAX_LOG_LINE_LENGTH = 120
 
 def get_connection(args):
   url = urlparse(args.con)
@@ -31,13 +32,41 @@ def get_query(args, offset=None):
     query.startTime = int(args.start)
   if args.end:
     query.endTime = int(args.end)
-  query.versionIds = args.versions or []
+  if args.ids:
+    query.requestIds = args.ids
+  query.versionIds = [args.version]
   query.count = 1000 if args.count >= 1000 else args.count
   if offset:
     query.offset = offset
   return query.to_bytes()
 
+def output_http(record):
+  time_seconds = (record.endTime or record.startTime) / 10**6
+  date_string = time.strftime('%d/%b/%Y:%H:%M:%S %z',
+                              time.localtime(time_seconds))
+  print '%s: %s - %s [%s] "%s %s %s" %d %d - "%s"' % (
+        record.requestId, record.ip, record.nickname, date_string, record.method, record.resource, 
+        record.httpVersion, record.status or 0, record.responseSize or 0, record.userAgent)
+
+def output_appengine(record):
+  output_http(record)
+  for appLog in record.appLogs:
+    time_seconds = float(appLog.time) / 10**6
+    date_string = time.strftime('%M:%S', time.localtime(time_seconds))
+    line = ' + %s.%s %s %s' % (date_string, round(time_seconds % 1, 3),
+                               logging.getLevelName(appLog.level), appLog.message)
+    n = MAX_LOG_LINE_LENGTH
+    line_no = 0
+    for line in (line[i * n:i * n+n] for i, _ in enumerate(line[::n])):
+      if line_no == 0:
+        print line
+      else:
+        print '   %s' % line
+
+OUT_REGISTER = dict(http=output_http, appengine=output_appengine)
+
 def main(args):
+  outputter = OUT_REGISTER[args.format]
   start = time.time()
   record_count = 0
   offset = None
@@ -57,17 +86,12 @@ def main(args):
         for _ in xrange(result_count):
           buflen, = struct.unpack('I', fh.read(_I_SIZE))
           record = logging_capnp.RequestLog.from_bytes(fh.read(buflen))
-          time_seconds = (record.endTime or record.startTime) / 10**6
-          date_string = time.strftime('%d/%b/%Y:%H:%M:%S %z',
-                                      time.localtime(time_seconds))
-          print '%s - %s [%s] "%s %s %s" %d %d - "%s"' % (
-                record.ip, record.nickname, date_string, record.method, record.resource, 
-                record.httpVersion, record.status or 0, record.responseSize or 0, record.userAgent)
+          outputter(record)
           record_count += 1
           if record_count == args.count:
             break
         offset = record.offset
-        if record_count == args.count:
+        if record_count == args.count or args.ids:
           break
     finally:
       fh.close()
@@ -77,13 +101,14 @@ def main(args):
 
 if __name__ == '__main__':
   parser = argparse.ArgumentParser(description='Query AppScale logserver.')
+  parser.add_argument('--app_id', type=str, required=True, help='app_id')
+  parser.add_argument('--version', type=str, required=True, help='app version')
   parser.add_argument('--con', type=str, nargs='?', default='unix:///tmp/.appscale_logserver', help='Connection eg tcp://10.10.10.10:1010. (Default local log server)')
   parser.add_argument('--start', type=int, nargs='?', help='start epoch timestamp')
   parser.add_argument('--end', type=int, nargs='?', help='end epoch timestamp')
   parser.add_argument('--ids', type=str, nargs='+', help='requestIds')
   parser.add_argument('--count', type=int, nargs='?', help='count', default=10)
-  parser.add_argument('app_id', type=str, help='app_id')
-  parser.add_argument('versions', type=str, nargs='+', help='app versions')
+  parser.add_argument('--format', type=str, choices=['http', 'appengine'], nargs='?', help='output format', default='appengine')
   args = parser.parse_args()
   #import pdb; pdb.set_trace()
   main(args)

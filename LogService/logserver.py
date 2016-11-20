@@ -24,7 +24,7 @@ def readLogRecord(handle, parse=False):
     return (None, None) if parse else None
   length, = struct.unpack('I', bytes)
   bytes = handle.read(length)
-  return (bytes, logging_capnp.RequestLog.from_bytes(bytes)) if parse else None
+  return (bytes, logging_capnp.RequestLog.from_bytes(bytes)) if parse else bytes
 
 def calculateOffset(log_file_id, position):
   return struct.pack('HI', log_file_id, position)
@@ -71,40 +71,47 @@ class AppLogFile(object):
     if self._indexSize % _PAGE_SIZE == 0:
       self._pageIndexHandle.write(struct.pack('qI', requestLog.endTime, position))
       self._pageIndexHandle.flush()
-    self._handle.flush()
-    self._requestIdIndexHandle.flush()
+      self._handle.flush()
+      self._requestIdIndexHandle.flush()
     self._indexSize += 1
     return position
 
   def get(self, requestIds):
     if self.mode == AppLogFile.MODE_WRITE:
-      current_pos_handle = self._handle.tell()
-      current_pos_index_handle = self._requestIdIndexHandle.tell()
-    results_found = 0
-    self._requestIdIndexHandle.seek(0)
-    while True:
-      buf = self._requestIdIndexHandle.read(14000)
-      if not buf:
-        break
-      i = 0
+      self._requestIdIndexHandle.flush()
+      self._handle.flush()
+      index_handle = open(self._requestIdIndexFilename, 'rb')
+      handle = open(self._filename, 'rb')
+    else:
+      index_handle = self._requestIdIndexHandle
+      handle = self._handle
+    try:
+      results_found = 0
+      index_handle.seek(0)
       while True:
-        key = buf[i:i+10]
-        if not key:
+        buf = index_handle.read(14000)
+        if not buf:
           break
-        if key in requestIds:
-          requestIds.remove(key)
-          position = struct.unpack('I', buf[i+10:i+14])
-          self._handle.seek(position)
-          record = readLogRecord(self._handle, False)
-          yield key, record
+        i = 0
+        while True:
+          key = buf[i:i+10]
+          if not key:
+            break
+          if key in requestIds:
+            requestIds.remove(key)
+            position, = struct.unpack('I', buf[i+10:i+14])
+            handle.seek(position)
+            record = readLogRecord(handle, False)
+            yield key, record
+            if not requestIds:
+              break
+          i += 14
           if not requestIds:
             break
-        i += 14
-        if not requestIds:
-          break
-    if self.mode == AppLogFile.MODE_WRITE:
-      self._handle.seek(current_pos_handle)
-      self._requestIdIndexHandle.seek(current_pos_index_handle)
+    finally:
+      if self.mode == AppLogFile.MODE_WRITE:
+        handle.close()
+        index_handle.close()
 
   def iterpages(self):
     if self.mode == AppLogFile.MODE_WRITE:
@@ -203,7 +210,6 @@ class Protocol(protocol.Protocol):
       continue
 
   def processActions(self):
-    #import ipdb; ipdb.set_trace()
     buffer_size = len(self.buf)
     if buffer_size < 5:
       return False
