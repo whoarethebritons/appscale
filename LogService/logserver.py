@@ -58,6 +58,11 @@ class AppLogFile(object):
     self._pageIndexHandle.close()
     self._requestIdIndexHandle.close()
 
+  def delete(self):
+    os.unlink(self._filename)
+    os.unlink(self._requestIdIndexFilename)
+    os.unlink(self._pageIndexFilename)
+
   def write(self, buf):
     if self.mode != AppLogFile.MODE_WRITE:
       raise ValueError("Cannot write to AppLogFile in search mode")
@@ -154,7 +159,8 @@ class AppLogFile(object):
 
 class AppRegistry(object):
 
-  def __init__(self, root_path, app_id):
+  def __init__(self, root_path, app_id, factory):
+    self._factory = factory
     self._followers = dict()
     self._app_id = app_id
     self._root_path = root_path
@@ -181,6 +187,11 @@ class AppRegistry(object):
       self._writer = AppLogFile(self._root_path, self._app_id,
                                 self._writer.log_file_id + 1,
                                 AppLogFile.MODE_WRITE)
+      log_file_count = len(self._log_files) - 1
+      if log_file_count * MAX_LOG_FILE_SIZE > self._factory.size * 1024 ** 3:
+        lf = self._log_files.pop(0)
+        lf.close()
+        lf.delete()
     self.broadcastToFollowers(requestLog, buf)
 
   def iter(self):
@@ -265,7 +276,7 @@ class Protocol(protocol.Protocol):
     if self.app_id in self.factory.apps:
       self.app_registry = self.factory.apps[self.app_id]
       return
-    self.app_registry = AppRegistry(self.factory.path, self.app_id)
+    self.app_registry = AppRegistry(self.factory.path, self.app_id, self.factory)
     self.factory.apps[self.app_id] = self.app_registry
 
   def processActionLog(self, query):
