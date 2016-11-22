@@ -20,6 +20,8 @@ import time
 import os
 import socket
 import struct
+import logging
+import base64
 from Queue import Queue, Empty
 from collections import defaultdict
 
@@ -108,13 +110,16 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
           log_service_pb.LogServiceError.STORAGE_ERROR)
     try:
       log_server.send(packet)
-      with log_server.makefile('rb') as fh:
+      fh = log_server.makefile('rb')
+      try:
         buf = fh.read(_I_SIZE)
         count, = struct.unpack('I', buf)
-        for _ in xrange():
+        for _ in xrange(count):
           buf = fh.read(_I_SIZE)
           length, = struct.unpack('I', buf)
           yield fh.read(length)
+      finally:
+        fh.close()
       self._release_logserver_connection(key, log_server)
     except socket.error, e:
       self._cleanup_logserver_connection(key, log_server)
@@ -214,56 +219,59 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
 
   @apiproxy_stub.Synchronized
   def _Dynamic_Read(self, request, response, request_id):
-    if (request.module_version_size() < 1 and
-        request.version_id_size() < 1 and
-        request.request_id_size() < 1):
-      raise apiproxy_errors.ApplicationError(
-          log_service_pb.LogServiceError.INVALID_REQUEST)
+    try:
+      if ( request.version_id_size() < 1 and
+          request.request_id_size() < 1):
+        raise apiproxy_errors.ApplicationError(
+            log_service_pb.LogServiceError.INVALID_REQUEST)
+  
+      if (request.request_id_size() and
+          (request.has_start_time() or request.has_end_time() or
+           request.has_offset())):
+        raise apiproxy_errors.ApplicationError(
+            log_service_pb.LogServiceError.INVALID_REQUEST)
 
-    if request.module_version_size() > 0 and request.version_id_size() > 0:
-      raise apiproxy_errors.ApplicationError(
-          log_service_pb.LogServiceError.INVALID_REQUEST)
-
-    if (request.request_id_size() and
-        (request.has_start_time() or request.has_end_time() or
-         request.has_offset())):
-      raise apiproxy_errors.ApplicationError(
-          log_service_pb.LogServiceError.INVALID_REQUEST)
+      rl = self._pending_requests.get(request_id, None)
+      if rl is None:
+        raise apiproxy_errors.ApplicationError(
+            log_service_pb.LogServiceError.INVALID_REQUEST)
+        
+      query = logging_capnp.Query.new_message()
+      if request.has_start_time():
+        query.startTime = request.start_time()
+      if request.has_end_time():
+        query.endTime = request.end_time()
+      if request.has_offset():
+        logging.info("Offset: %s", request.offset())
+        query.offset = base64.b64decode(request.offset().replace('request_id: "', '').replace('"', ''))
+      if request.has_minimum_log_level():
+        query.minimumLogLevel = request.minimum_log_level()
+      query.includeAppLogs = bool(request.include_app_logs())
+      query.versionIds = request.version_id_list()
+      if request.request_id_size():
+        query.requestIds = request.request_id_list()
+      if request.has_count() and request.count() < self._DEFAULT_READ_COUNT:
+        count = request.count()
+      else:
+        count = self._DEFAULT_READ_COUNT
+      query.count = count
       
-    rl = self._pending_requests.get(request_id, None)
-    if rl is None:
+      # Perform query to logserver
+      buf = query.to_bytes()
+      packet = 'q%s%s' % (struct.pack('I', len(buf)), buf)
+      result_count = 0
+      for bytes in self._query_log_server(rl.appId, packet):
+        requestLog = logging_capnp.RequestLog.from_bytes(bytes)
+        log = response.add_log()
+        self._fill_request_log(requestLog, log, request.include_app_logs())
+        result_count += 1
+  
+      if result_count == count:
+        response.mutable_offset().set_request_id(requestLog.offset)
+    except:
+      logging.exception("Failed to retrieve logs")
       raise apiproxy_errors.ApplicationError(
           log_service_pb.LogServiceError.INVALID_REQUEST)
-      
-    query = logging_capnp.Query.new_message()
-    if request.has_start_time():
-      query.startTime = request.start_time()
-    if request.has_end_time():
-      query.endTime = request.end_time()
-    if request.has_offset():
-      query.offset = request.offset()
-    if request.has_minimum_log_level():
-      query.minimumLogLevel = request.minimum_log_level()
-    query.include_app_logs = request.include_app_logs()
-    query.versionIds = request.version_id_list()
-    if request.request_id_size():
-      query.requestIds = request.request_id_list()
-    if request.has_count() and request.count() < self._DEFAULT_READ_COUNT:
-      count = request.count()
-    else:
-      count = self._DEFAULT_READ_COUNT
-    query.count = count
-    
-    # Perform query to logserver
-    buf = query.to_bytes()
-    packet = 'q%s%s' % (struct.pack('I', len(buf)), buf)
-    for bytes in self._query_log_server(rl.appId, packet):
-      requestLog = logging_capnp.RequestLog.from_bytes(bytes)
-      log = response.add_log()
-      self._fill_request_log(requestLog, log, request.include_app_logs())
-
-    if len(logs) == count:
-      response.mutable_offset().set_request_id(requestLog.offset)
 
   def _fill_request_log(self, requestLog, log, include_app_logs):
     log.set_request_id(requestLog.requestId)
@@ -283,9 +291,9 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
     log.set_url_map_entry(requestLog.urlMapEntry)
     log.set_latency(requestLog.latency)
     log.set_mcycles(requestLog.mcycles)
-    log.set_finished(requestLog.finised)
+    log.set_finished(requestLog.finished)
     
-    log.mutable_offset().set_request_id(requestLog.offset)
+    log.mutable_offset().set_request_id(base64.b64encode(requestLog.offset))
     time_seconds = (requestLog.endTime or requestLog.startTime) / 10**6
     date_string = time.strftime('%d/%b/%Y:%H:%M:%S %z',
                                 time.localtime(time_seconds))
@@ -300,28 +308,6 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
         line.set_time(appLog.time)
         line.set_level(appLog.level)
         line.set_log_message(appLog.message)
-
-  @staticmethod
-  def _extract_read_filters(request):
-
-
-    if request.module_version(0).has_module_id():
-      module_version = ':'.join([request.module_version(0).module_id(),
-                                 request.module_version(0).version_id()])
-    else:
-      module_version = request.module_version(0).version_id()
-    filters = [('version_id = ?', module_version)]
-    if request.has_start_time():
-      filters.append(('start_time >= ?', request.start_time()))
-    if request.has_end_time():
-      filters.append(('end_time < ?', request.end_time()))
-    if request.has_offset():
-      filters.append(('RequestLogs.id < ?', int(request.offset().request_id())))
-    if not request.include_incomplete():
-      filters.append(('finished = ?', 1))
-    if request.has_minimum_log_level():
-      filters.append(('AppLogs.level >= ?', request.minimum_log_level()))
-    return filters
 
   def _Dynamic_SetStatus(self, unused_request, unused_response,
                          unused_request_id):
