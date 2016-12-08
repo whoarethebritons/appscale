@@ -18,6 +18,7 @@
 
 import time
 import os
+import sys
 import socket
 import struct
 import logging
@@ -31,6 +32,8 @@ from google.appengine.api import apiproxy_stub
 from google.appengine.api.logservice import log_service_pb
 from google.appengine.runtime import apiproxy_errors
 
+sys.path.append(os.path.join(os.path.dirname(__file__), "../../../../../lib"))
+import appscale_info
 import logging_capnp
 
 _I_SIZE = struct.calcsize('I')
@@ -72,16 +75,23 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
       return key, queue.get(False)
     except Empty:
       pass
-    if os.path.exists(LogServiceStub._LOGSERVER_PATH):
-      client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    #get head node ip from login_private_ip
+    for ip in appscale_info.get_zk_node_ips():
       try:
-        client.connect(LogServiceStub._LOGSERVER_PATH)
-        client.setblocking(blocking)
-        client.send('a%s%s' % (struct.pack('I', len(app_id)), app_id)) 
-        return key, client
+        client.connect((ip, 7422))
       except socket.error, e:
-        return None, None
-    return None, None
+        logging.info("Log Server at {ip} refused connection".format(ip=ip))
+        continue
+      else:
+        break
+    try:
+      #client.connect(LogServiceStub._LOGSERVER_PATH)
+      client.setblocking(blocking)
+      client.send('a%s%s' % (struct.pack('I', len(app_id)), app_id))
+      return key, client
+    except socket.error, e:
+      return None, None
 
   def _release_logserver_connection(self, key, connection):
     queue = self._log_server[key]
