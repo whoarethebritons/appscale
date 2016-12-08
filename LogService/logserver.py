@@ -10,7 +10,6 @@ import logging_capnp
 
 from twisted.internet import reactor, protocol
 from twisted.python import log
-from pip.cmdoptions import log_file
 
 MAX_LOG_FILE_SIZE = 1024 * 1024 * 1024
 
