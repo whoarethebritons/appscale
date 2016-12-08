@@ -3821,7 +3821,7 @@ class Djinn
   def start_log_server
     log_server_pid = "#{APPSCALE_HOME}/LogService/logserver.pid"
     start_cmd = "twistd --pidfile=#{log_server_pid} appscale-logserver"
-    stop_cmd = "$(which kill) $(cat #{log_server_pid}"
+    stop_cmd = "/bin/bash -c '$(which kill) $(cat #{log_server_pid}'"
     port = 7422
     env = {
         'APPSCALE_HOME' => APPSCALE_HOME,
