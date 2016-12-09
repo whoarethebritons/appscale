@@ -33,7 +33,7 @@ from google.appengine.api.logservice import log_service_pb
 from google.appengine.runtime import apiproxy_errors
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../../../../lib"))
-import appscale_info
+import file_io
 import logging_capnp
 
 _I_SIZE = struct.calcsize('I')
@@ -76,21 +76,15 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
     except Empty:
       pass
     client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    #get head node ip from login_private_ip
-    for ip in appscale_info.get_zk_node_ips():
-      try:
-        client.connect((ip, 7422))
-      except socket.error, e:
-        logging.info("Log Server at {ip} refused connection".format(ip=ip))
-        continue
-      else:
-        break
+    #get head node_private ip from /etc/appscale/head_node_private_ip
+    ip = file_io.read("/etc/appscale/head_node_private_ip").rstrip()
     try:
-      #client.connect(LogServiceStub._LOGSERVER_PATH)
+      client.connect((ip, 7422))
       client.setblocking(blocking)
       client.send('a%s%s' % (struct.pack('I', len(app_id)), app_id))
       return key, client
     except socket.error, e:
+      logging.info("Log Server at {ip} refused connection".format(ip=ip))
       return None, None
 
   def _release_logserver_connection(self, key, connection):
@@ -100,7 +94,7 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
   def _cleanup_logserver_connection(self, connection):
     try:
       connection.close()
-    except socker.error:
+    except socket.error:
       pass
 
   def _send_to_logserver(self, app_id, packet):
