@@ -370,7 +370,6 @@ class Protocol(protocol.Protocol):
 
   ACTIONS = dict(l=processActionLog, a=processSetAppId, q=processActionQuery, f=processActionFollow)
 
-
 class LogServerFactory(protocol.Factory):
     protocol = Protocol
 

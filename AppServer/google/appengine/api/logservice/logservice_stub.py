@@ -38,7 +38,6 @@ import logging_capnp
 
 _I_SIZE = struct.calcsize('I')
 
-
 def _cleanup_logserver_connection(connection):
   try:
     connection.close()
