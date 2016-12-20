@@ -3306,7 +3306,7 @@ class DatastoreDistributed():
       A long representing a unique transaction ID.
     """
     txid = self.zookeeper.get_transaction_id(app_id, is_xg)
-    in_progress = [str(txid) for txid
+    in_progress = [str(existing_txid) for existing_txid
                    in self.zookeeper.get_current_transactions(app_id)[:100]]
     self.datastore_batch.start_transaction(app_id, txid, in_progress)
     return txid
