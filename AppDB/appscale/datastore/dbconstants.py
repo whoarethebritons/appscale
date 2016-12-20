@@ -156,10 +156,11 @@ SCHEMA_TABLE_SCHEMA = ['schema']
 
 # Possible values in the 'action' column of the transaction table.
 class TxnActions(object):
-  DELETE = '0'
-  PUT = '1'
-  GET = '2'
-  ENQUEUE_TASK = '3'
+  START = 0
+  GET = 1
+  PUT = 2
+  DELETE = 3
+  ENQUEUE_TASK = 4
 
 
 ###############################
@@ -201,6 +202,12 @@ class AppScaleBadArg(Exception):
     self.value = value
   def __str__(self):
     return repr(self.value)
+
+class ConcurrentModificationException(Exception):
+  pass
+
+class TooManyGroupsException(Exception):
+  pass
 
 class ExcessiveTasks(Exception):
   """ Indicates that there are too many tasks for a transaction. """

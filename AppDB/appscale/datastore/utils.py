@@ -544,3 +544,21 @@ def get_kind_key(prefix, key_path):
   encoded_path += dbconstants.KIND_SEPARATOR
 
   return prefix + dbconstants.KEY_DELIMITER + encoded_path
+
+
+def group_for_key(key):
+  if not isinstance(key, entity_pb.Reference):
+    key = entity_pb.Reference(key)
+  first_element = key.path().element(0)
+  key.path().clear_element()
+  element = key.path().add_element()
+  element.MergeFrom(first_element)
+  return key.Encode()
+
+
+def entity_table_key(key):
+  if not isinstance(key, entity_pb.Reference):
+    key = entity_pb.Reference(key)
+
+  prefix = dbconstants.KEY_DELIMITER.join([key.app(), key.name_space()])
+  return get_entity_key(prefix, key.path())
