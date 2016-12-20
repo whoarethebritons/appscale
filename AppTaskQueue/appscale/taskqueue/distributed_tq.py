@@ -446,6 +446,7 @@ class DistributedTaskQueue():
                                                start_command, 
                                                stop_command, 
                                                [self.CELERY_PORT],
+                                               max_memory=1000,
                                                env_vars=self.CELERY_ENV_VARS)
     if monit_interface.start(watch):
       json_response = {'error': False}

@@ -2068,8 +2068,8 @@ class Djinn
     # If we are the headnode, we may need to start/setup all other nodes.
     # Better do it early on, since it may take some time for the other
     # nodes to start up.
+    build_uncommitted_changes
     if my_node.is_shadow?
-      build_uncommitted_changes
       Djinn.log_info("Preparing other nodes for this deployment.")
 
       find_me_in_locations()
@@ -3980,7 +3980,7 @@ class Djinn
   def build_taskqueue()
     Djinn.log_info('Building uncommitted taskqueue changes')
     extras = TaskQueue::OPTIONAL_FEATURES.join(',')
-    if system('pip install --upgrade --no-deps ' +
+    if Djinn.log_run('pip install --upgrade --no-deps ' +
               "#{APPSCALE_HOME}/AppTaskQueue[#{extras}] > /dev/null 2>&1")
       Djinn.log_info('Finished building taskqueue')
     else
@@ -4029,7 +4029,7 @@ class Djinn
     status = `git -C #{APPSCALE_HOME} status`
     build_taskqueue if status.include?('AppTaskQueue')
     build_datastore if status.include?('AppDB')
-    build_java_appserver if status.include?('AppTaskQueue')
+    build_java_appserver if status.include?('AppServer_Java')
   end
 
   def initialize_nodes_in_parallel(node_info)
