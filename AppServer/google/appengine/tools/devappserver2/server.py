@@ -34,6 +34,8 @@ import urllib
 import urlparse
 import wsgiref.headers
 
+import capnp
+
 from google.appengine.api import api_base_pb
 from google.appengine.api import apiproxy_stub_map
 from google.appengine.api import appinfo
