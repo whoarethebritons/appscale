@@ -14,6 +14,7 @@ import urllib
 
 from appscale.datastore.cassandra_env import cassandra_interface
 from appscale.datastore.unpackaged import APPSCALE_PYTHON_APPSERVER
+from kazoo.exceptions import NoNodeError
 from kazoo.exceptions import KazooException
 from kazoo.exceptions import ZookeeperError
 
@@ -935,6 +936,14 @@ class ZKTransaction:
       raise ZKTransactionException("Couldn't get updated key list for appid " \
         "{0}, txid {1}".format(app_id, txid))
 
+  def remove_tx_node(self, app_id, txid):
+    txpath = self.get_transaction_path(app_id, txid)
+    try:
+      self.run_with_retry(self.handle.delete, txpath, -1, True)
+    except NoNodeError:
+      return
+
+
   def release_lock(self, app_id, txid):
     """ Releases all locks acquired during this transaction.
 
@@ -1625,3 +1634,13 @@ class ZKTransaction:
         self.reestablish_connection()
         return 
     self.logger.debug('Lock GC took {} seconds.'.format(time.time() - start))
+
+  def get_current_transactions(self, project):
+    project_path = PATH_SEPARATOR.join([APPS_PATH, project])
+    txrootpath = PATH_SEPARATOR.join([project_path, APP_TX_PATH])
+    try:
+      txlist = self.run_with_retry(self.handle.get_children, txrootpath)
+    except kazoo.exceptions.NoNodeError:
+      # there is no transaction yet.
+      return []
+    return [int(txid.lstrip(APP_TX_PREFIX)) for txid in txlist]

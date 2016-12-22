@@ -5,8 +5,12 @@
 """
 import cassandra
 import logging
+import mmh3
+import re
+import struct
 import sys
 import time
+import uuid
 
 from cassandra.cluster import Cluster
 from cassandra.concurrent import execute_concurrent
@@ -22,6 +26,7 @@ from ..dbconstants import AppScaleDBConnectionError
 from ..dbconstants import TxnActions
 from ..dbinterface import AppDBInterface
 from ..unpackaged import APPSCALE_LIB_DIR
+from ..unpackaged import APPSCALE_PYTHON_APPSERVER
 from ..utils import clean_app_id
 from ..utils import encode_index_pb
 from ..utils import get_composite_index_keys
@@ -33,6 +38,10 @@ from ..utils import get_kind_key
 
 sys.path.append(APPSCALE_LIB_DIR)
 import appscale_info
+
+sys.path.append(APPSCALE_PYTHON_APPSERVER)
+from google.appengine.api.taskqueue import taskqueue_service_pb
+from google.appengine.datastore import entity_pb
 
 # The directory Cassandra is installed to.
 CASSANDRA_INSTALL_DIR = '/opt/cassandra'
@@ -60,6 +69,8 @@ PRIMED_KEY = 'primed'
 
 # The size in bytes that a batch must be to use the batches table.
 LARGE_BATCH_THRESHOLD = 5 << 10
+
+PATH_ELEMENT_ID_RE = re.compile('^[0-9]{10}$')
 
 
 def batch_size(batch):
@@ -250,6 +261,32 @@ def mutations_for_entity(entity, txn, current_value=None,
                       'values': reference_value})
 
   return mutations
+
+
+def tx_partition(app, txid):
+  murmur_int = mmh3.hash64(app + str(txid))[0]
+  return bytearray(struct.pack('<q', murmur_int))
+
+
+def decode_key(encoded_key):
+  key_parts = encoded_key.split(dbconstants.KEY_DELIMITER)
+  namespace = key_parts[1]
+  path = entity_pb.Path()
+  for encoded_element in key_parts[2].split(dbconstants.KIND_SEPARATOR):
+    if not encoded_element:
+      continue
+    kind, element_id = encoded_element.split(':')
+    element = path.add_element()
+    element.set_type(kind)
+
+    # If the id is only digits and exactly 10 characters long, it was probably
+    # auto-generated.
+    if PATH_ELEMENT_ID_RE.match(element_id):
+      element.set_id(int(element_id))
+    else:
+      element.set_name(element_id)
+
+  return namespace, path
 
 
 class FailedBatch(Exception):
@@ -479,6 +516,16 @@ class DatastoreProxy(AppDBInterface):
     prepared_statements = {'insert': {}, 'delete': {}}
     for mutation in mutations:
       table = mutation['table']
+      if table == 'group_updates':
+        key = mutation['key']
+        insert = """
+          INSERT INTO group_updates (group, last_update)
+          VALUES (%(group)s, %(last_update)s)
+        """
+        parameters = {'group': key, 'last_update': mutation['last_update']}
+        batch.add(insert, parameters)
+        continue
+
       if mutation['operation'] == TxnActions.PUT:
         if table not in prepared_statements['insert']:
           prepared_statements['insert'][table] = self.prepare_insert(table)
@@ -513,6 +560,17 @@ class DatastoreProxy(AppDBInterface):
     statements_and_params = []
     for mutation in mutations:
       table = mutation['table']
+
+      if table == 'group_updates':
+        key = mutation['key']
+        insert = """
+          INSERT INTO group_updates (group, last_update)
+          VALUES (%(group)s, %(last_update)s)
+        """
+        parameters = {'group': key, 'last_update': mutation['last_update']}
+        statements_and_params.append((SimpleStatement(insert), parameters))
+        continue
+
       if mutation['operation'] == TxnActions.PUT:
         if table not in prepared_statements['insert']:
           prepared_statements['insert'][table] = self.prepare_insert(table)
@@ -940,3 +998,363 @@ class DatastoreProxy(AppDBInterface):
       return False
 
     return version is not None and float(version) == EXPECTED_DATA_VERSION
+
+  def group_updates(self, groups):
+    futures = []
+    for group in groups:
+      query = 'SELECT * FROM group_updates WHERE group=%s'
+      futures.append(self.session.execute_async(query, [bytearray(group)]))
+
+    updates = set()
+    for future in futures:
+      rows = future.result()
+      try:
+        result = rows[0]
+      except IndexError:
+        continue
+
+      updates.add(result.last_update)
+
+    return updates
+
+  def put_entities_tx(self, app, txid, entities):
+    batch = BatchStatement(consistency_level=ConsistencyLevel.QUORUM,
+                           retry_policy=self.retry_policy)
+    insert = self.session.prepare("""
+      INSERT INTO transactions (txid_hash, operation, namespace, path, entity)
+      VALUES (?, ?, ?, ?, ?)
+      USING TTL 120
+    """)
+
+    for entity in entities:
+      args = (tx_partition(app, txid),
+              TxnActions.PUT,
+              entity.key().name_space(),
+              bytearray(entity.key().path().Encode()),
+              bytearray(entity.Encode()))
+      batch.add(insert, args)
+
+    try:
+      self.session.execute(batch)
+    except dbconstants.TRANSIENT_CASSANDRA_ERRORS:
+      message = 'Exception while inserting entities in a transaction'
+      logging.exception(message)
+      raise AppScaleDBConnectionError(message)
+
+  def delete_entities_tx(self, app, txid, entity_keys):
+    batch = BatchStatement(consistency_level=ConsistencyLevel.QUORUM,
+                           retry_policy=self.retry_policy)
+    insert = self.session.prepare("""
+      INSERT INTO transactions (txid_hash, operation, namespace, path)
+      VALUES (?, ?, ?, ?)
+      USING TTL 120
+    """)
+
+    for key in entity_keys:
+      args = (tx_partition(app, txid),
+              TxnActions.DELETE,
+              key.name_space(),
+              bytearray(key.path().Encode()))
+      batch.add(insert, args)
+
+    try:
+      self.session.execute(batch)
+    except dbconstants.TRANSIENT_CASSANDRA_ERRORS:
+      message = 'Exception while deleting entities in a transaction'
+      logging.exception(message)
+      raise AppScaleDBConnectionError(message)
+
+  def cache_get_results(self, app, txid, results):
+    batch = BatchStatement(consistency_level=ConsistencyLevel.QUORUM,
+                           retry_policy=self.retry_policy)
+    insert = self.session.prepare("""
+      INSERT INTO transactions (txid_hash, operation, namespace, path, entity)
+      VALUES (?, ?, ?, ?, ?)
+      USING TTL 120
+    """)
+
+    for entity_key, result in results.iteritems():
+      if not result:
+        continue
+
+      encoded_entity = result[dbconstants.APP_ENTITY_SCHEMA[0]]
+      namespace, path = decode_key(entity_key)
+      args = (tx_partition(app, txid),
+              TxnActions.GET,
+              namespace,
+              bytearray(path.Encode()),
+              bytearray(encoded_entity))
+      batch.add(insert, args)
+
+    try:
+      self.session.execute(batch)
+    except dbconstants.TRANSIENT_CASSANDRA_ERRORS:
+      message = 'Exception while caching entities in a transaction'
+      logging.exception(message)
+      raise AppScaleDBConnectionError(message)
+
+  def query_transaction_cache(self, app, txid, namespace, ancestor):
+    select = """
+      SELECT path, entity FROM transactions
+      WHERE txid_hash = %(txid_hash)s
+      AND operation = %(operation)s
+      AND namespace = %(namespace)s
+      AND path >= %(start_row)s
+      AND path <= %(end_row)s
+    """
+    start_key = ancestor.path().Encode()
+    end_key = start_key + dbconstants.TERMINATING_STRING
+    parameters = {'txid_hash': tx_partition(app, txid),
+                  'operation': TxnActions.GET,
+                  'namespace': namespace,
+                  'start_row': bytearray(start_key),
+                  'end_row': bytearray(end_key)}
+
+    try:
+      results = self.session.execute(select, parameters)
+    except dbconstants.TRANSIENT_CASSANDRA_ERRORS:
+      message = 'Exception while querying entity cache'
+      logging.exception(message)
+      raise AppScaleDBConnectionError(message)
+
+    entities = {}
+    prefix = dbconstants.KEY_DELIMITER.join([app, namespace])
+    for result in results:
+      path = entity_pb.Path(result.path)
+      entity_key = get_entity_key(prefix, path)
+      entities[entity_key] = result.entity
+
+    return entities
+
+  def fetch_from_transaction_cache(self, app, txid, entity_keys):
+    keys_by_namespace = {}
+    for entity_key in entity_keys:
+      namespace = entity_key.name_space()
+      if namespace not in keys_by_namespace:
+        keys_by_namespace[namespace] = []
+      keys_by_namespace[namespace].append(entity_key)
+
+    select = """
+      SELECT namespace, path, entity FROM transactions
+      WHERE txid_hash = %(txid_hash)s
+      AND operation = %(operation)s
+      AND namespace = %(namespace)s
+      AND path IN %(path)s
+    """
+    futures = []
+    for namespace in keys_by_namespace:
+      paths = (bytearray(key.path().Encode())
+               for key in keys_by_namespace[namespace])
+      parameters = {'txid_hash': tx_partition(app, txid),
+                    'operation': TxnActions.GET,
+                    'namespace': namespace,
+                    'path': ValueSequence(paths)}
+      futures.append(self.session.execute_async(select, parameters))
+
+    entities = {}
+    for future in futures:
+      results = future.result()
+      for result in results:
+        prefix = dbconstants.KEY_DELIMITER.join([app, result.namespace])
+        path = entity_pb.Path(result.path)
+        entity_key = get_entity_key(prefix, path)
+        entities[entity_key] = {'entity': result.entity}
+
+    return entities
+
+  def transactional_tasks(self, app, txid):
+    select = """
+      SELECT count(*) FROM transactions
+      WHERE txid_hash = %(txid_hash)s
+      AND operation = %(operation)s
+    """
+    parameters = {'txid_hash': tx_partition(app, txid),
+                  'operation': TxnActions.ENQUEUE_TASK}
+    try:
+      return self.session.execute(select, parameters)[0].count
+    except dbconstants.TRANSIENT_CASSANDRA_ERRORS:
+      message = 'Exception while fetching task count'
+      logging.exception(message)
+      raise AppScaleDBConnectionError(message)
+
+  def add_tasks(self, app, txid, tasks):
+    batch = BatchStatement(consistency_level=ConsistencyLevel.QUORUM,
+                           retry_policy=self.retry_policy)
+    insert = self.session.prepare("""
+      INSERT INTO transactions (txid_hash, operation, namespace, path, task)
+      VALUES (?, ?, ?, ?, ?)
+      USING TTL 120
+    """)
+
+    for task in tasks:
+      task.clear_transaction()
+
+      # The path for the task entry doesn't matter as long as it's unique.
+      path = bytearray(str(uuid.uuid4()))
+
+      args = (tx_partition(app, txid),
+              TxnActions.ENQUEUE_TASK,
+              '',
+              path,
+              task.Encode())
+      batch.add(insert, args)
+
+    try:
+      self.session.execute(batch)
+    except dbconstants.TRANSIENT_CASSANDRA_ERRORS:
+      message = 'Exception while adding tasks in a transaction'
+      logging.exception(message)
+      raise AppScaleDBConnectionError(message)
+
+  def start_transaction(self, app, txid, in_progress):
+    insert = """
+      INSERT INTO transactions (txid_hash, operation, namespace, path,
+                                in_progress)
+      VALUES (%(txid_hash)s, %(operation)s, %(namespace)s, %(path)s,
+              %(in_progress)s)
+      USING TTL 120
+    """
+    parameters = {'txid_hash': tx_partition(app, txid),
+                  'operation': TxnActions.START,
+                  'namespace': '',
+                  'path': bytearray(0),
+                  'in_progress': ','.join(in_progress)}
+
+    try:
+      self.session.execute(insert, parameters)
+    except dbconstants.TRANSIENT_CASSANDRA_ERRORS:
+      message = 'Exception while starting transaction'
+      logging.exception(message)
+      raise AppScaleDBConnectionError(message)
+
+  def mutation_count(self, app, txid):
+    select = """
+      SELECT count(*) FROM transactions
+      WHERE txid_hash = %(txid_hash)s
+      AND operation IN %(operation)s
+    """
+    parameters = {'txid_hash': tx_partition(app, txid),
+                  'operation': ValueSequence((TxnActions.PUT,
+                                              TxnActions.DELETE,
+                                              TxnActions.ENQUEUE_TASK))}
+    try:
+      return self.session.execute(select, parameters)[0].count
+    except dbconstants.TRANSIENT_CASSANDRA_ERRORS:
+      message = 'Exception while fetching mutation count'
+      logging.exception(message)
+      raise AppScaleDBConnectionError(message)
+
+  def delete_ops(self, app, txid):
+    select = """
+      SELECT namespace, path FROM transactions
+      WHERE txid_hash = %(txid_hash)s
+      AND operation = %(operation)s
+    """
+    parameters = {'txid_hash': tx_partition(app, txid),
+                  'operation': TxnActions.DELETE}
+    try:
+      results = self.session.execute(select, parameters)
+    except dbconstants.TRANSIENT_CASSANDRA_ERRORS:
+      message = 'Exception while inserting entities in a transaction'
+      logging.exception(message)
+      raise AppScaleDBConnectionError(message)
+
+    entity_keys = []
+    for result in results:
+      key = entity_pb.Reference()
+      key.set_app(app)
+      key.set_name_space(result.namespace)
+      path = key.mutable_path()
+      path.MergeFromString(result.path)
+      entity_keys.append(key)
+    return entity_keys
+
+  def put_ops(self, app, txid):
+    select = """
+      SELECT namespace, path, entity FROM transactions
+      WHERE txid_hash = %(txid_hash)s
+      AND operation = %(operation)s
+    """
+    parameters = {'txid_hash': tx_partition(app, txid),
+                  'operation': TxnActions.PUT}
+    try:
+      results = self.session.execute(select, parameters)
+    except dbconstants.TRANSIENT_CASSANDRA_ERRORS:
+      message = 'Exception while fetching put operations'
+      logging.exception(message)
+      raise AppScaleDBConnectionError(message)
+
+    entities = {}
+    for result in results:
+      key = entity_pb.Reference()
+      key.set_app(app)
+      key.set_name_space(result.namespace)
+      path = key.mutable_path()
+      path.MergeFromString(result.path)
+      entities[key.Encode()] = result.entity
+    return entities
+
+  def tasks_to_enqueue(self, app, txid):
+    select = """
+      SELECT task FROM transactions
+      WHERE txid_hash = %(txid_hash)s
+      AND operation = %(operation)s
+    """
+    parameters = {'txid_hash': tx_partition(app, txid),
+                  'operation': TxnActions.ENQUEUE_TASK}
+    try:
+      results = self.session.execute(select, parameters)
+    except dbconstants.TRANSIENT_CASSANDRA_ERRORS:
+      message = 'Exception while fetching enqueue operations'
+      logging.exception(message)
+      raise AppScaleDBConnectionError(message)
+
+    return [taskqueue_service_pb.TaskQueueAddRequest(task)
+            for task in results]
+
+  def groups_fetched(self, app, txid):
+    select = """
+      SELECT namespace, path FROM transactions
+      WHERE txid_hash = %(txid_hash)s
+      AND operation = %(operation)s
+    """
+    parameters = {'txid_hash': tx_partition(app, txid),
+                  'operation': TxnActions.GET}
+    try:
+      results = self.session.execute(select, parameters)
+    except dbconstants.TRANSIENT_CASSANDRA_ERRORS:
+      message = 'Exception while fetching GET operations'
+      logging.exception(message)
+      raise AppScaleDBConnectionError(message)
+
+    groups = set()
+    for result in results:
+      result_path = entity_pb.Path(result.path)
+
+      group_key = entity_pb.Reference()
+      group_key.set_app(app)
+      group_key.set_name_space(result.namespace)
+      path = group_key.mutable_path()
+      element = path.add_element()
+      element.MergeFrom(result_path.element(0))
+
+      groups.add(group_key.Encode())
+    return groups
+
+  def concurrent_transactions(self, app, txid):
+    select = """
+      SELECT in_progress FROM transactions
+      WHERE txid_hash = %(txid_hash)s
+      AND operation = %(operation)s
+    """
+    parameters = {'txid_hash': tx_partition(app, txid),
+                  'operation': TxnActions.START}
+    try:
+      # TODO: Handle bad request (commit when start row doesn't exist).
+      in_progress = self.session.execute(select, parameters)[0].in_progress
+    except dbconstants.TRANSIENT_CASSANDRA_ERRORS:
+      message = 'Exception while fetching concurrent transactions'
+      logging.exception(message)
+      raise AppScaleDBConnectionError(message)
+
+    return {int(txid) for txid in in_progress.split(',')}

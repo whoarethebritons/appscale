@@ -104,6 +104,48 @@ def create_batch_tables(cluster, session):
     raise
 
 
+def create_group_table(session):
+  create_table = """
+    CREATE TABLE IF NOT EXISTS group_updates (
+      group blob PRIMARY KEY,
+      last_update int
+    )
+  """
+  statement = SimpleStatement(create_table, retry_policy=NO_RETRIES)
+  try:
+    session.execute(statement)
+  except cassandra.OperationTimedOut:
+    logging.warning(
+      'Encountered an operation timeout while creating group_updates table. '
+      'Waiting 1 minute for schema to settle.')
+    time.sleep(60)
+    raise
+
+
+def create_transactions_table(session):
+  create_table = """
+    CREATE TABLE IF NOT EXISTS transactions (
+      txid_hash blob,
+      operation tinyint,
+      namespace text,
+      path blob,
+      entity blob,
+      in_progress text,
+      task blob,
+      PRIMARY KEY (txid_hash, operation, namespace, path)
+    )
+  """
+  statement = SimpleStatement(create_table, retry_policy=NO_RETRIES)
+  try:
+    session.execute(statement)
+  except cassandra.OperationTimedOut:
+    logging.warning(
+      'Encountered an operation timeout while creating transactions table. '
+      'Waiting 1 minute for schema to settle.')
+    time.sleep(60)
+    raise
+
+
 def prime_cassandra(replication):
   """ Create Cassandra keyspace and initial tables.
 
@@ -170,6 +212,8 @@ def prime_cassandra(replication):
       raise
 
   create_batch_tables(cluster, session)
+  create_group_table(session)
+  create_transactions_table(session)
   create_pull_queue_tables(cluster, session)
 
   first_entity = session.execute(
