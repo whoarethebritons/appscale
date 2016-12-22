@@ -4,12 +4,9 @@ import re
 import sys
 
 from cassandra.query import BatchStatement
-from cassandra.query import ConsistencyLevel
 from cassandra.query import SimpleStatement
-from collections import deque
 from task import InvalidTaskInfo
 from task import Task
-from threading import Lock
 from unpackaged import APPSCALE_PYTHON_APPSERVER
 from .utils import logger
 
@@ -227,15 +224,6 @@ class PullQueue(Queue):
   # Tasks can be leased for up to a week.
   MAX_LEASE_TIME = 60 * 60 * 24 * 7
 
-  # The maximum number of index entries to cache.
-  MAX_CACHE_SIZE = 500
-
-  # The number of seconds to keep the index cache.
-  MAX_CACHE_DURATION = 30
-
-  # The seconds to wait after fetching 0 index results before retrying.
-  EMPTY_RESULTS_COOLDOWN = 5
-
   def __init__(self, queue_info, app, db_access=None):
     """ Create a PullQueue object.
 
@@ -245,8 +233,6 @@ class PullQueue(Queue):
       db_access: A DatastoreProxy object.
     """
     self.db_access = db_access
-    self.index_cache = {'global': {}, 'by_tag': {}}
-    self.index_cache_lock = Lock()
     super(PullQueue, self).__init__(queue_info, app)
 
   def add_task(self, task):
@@ -344,11 +330,9 @@ class PullQueue(Queue):
       FROM pull_queue_tasks
       WHERE app = %(app)s AND queue = %(queue)s AND id = %(id)s
     """.format(payload=payload)
-    statement = SimpleStatement(select_task,
-                                consistency_level=ConsistencyLevel.SERIAL)
     parameters = {'app': self.app, 'queue': self.name, 'id': task.id}
     try:
-      response = self.db_access.session.execute(statement, parameters)[0]
+      response = self.db_access.session.execute(select_task, parameters)[0]
     except IndexError:
       return None
 
@@ -567,6 +551,42 @@ class PullQueue(Queue):
     logger.debug('Leased {} tasks'.format(len(leased)))
     return leased
 
+  def total_tasks(self):
+    """ Get the total number of tasks in the queue.
+
+    Returns:
+      An integer specifying the number of tasks in the queue.
+    """
+    select_count = """
+      SELECT COUNT(*) FROM pull_queue_tasks
+      WHERE token(app, queue, id) >= token(%(app)s, %(queue)s, '')
+      AND token(app, queue, id) < token(%(app)s, %(next_queue)s, '')
+    """
+    parameters = {'app': self.app, 'queue': self.name,
+                  'next_queue': next_key(self.name)}
+    return self.db_access.session.execute(select_count, parameters)[0].count
+
+  def oldest_eta(self):
+    """ Get the ETA of the oldest task
+
+    Returns:
+      A datetime object specifying the oldest ETA or None if there are no
+      tasks.
+    """
+    session = self.db_access.session
+    select_oldest = """
+      SELECT eta FROM pull_queue_tasks_index
+      WHERE token(app, queue, eta) >= token(%(app)s, %(queue)s, 0)
+      AND token(app, queue, eta) < token(%(app)s, %(next_queue)s, 0)
+      LIMIT 1
+    """
+    parameters = {'app': self.app, 'queue': self.name,
+                  'next_queue': next_key(self.name)}
+    try:
+      return session.execute(select_oldest, parameters)[0].eta
+    except IndexError:
+      return None
+
   def purge(self):
     """ Remove all tasks from queue.
 
@@ -620,7 +640,7 @@ class PullQueue(Queue):
 
     return json.dumps(queue)
 
-  def _query_index(self, num_tasks, group_by_tag=False, tag=None):
+  def _query_available_tasks(self, num_tasks, group_by_tag=False, tag=None):
     """ Query the index table for available tasks.
 
     Args:
@@ -652,64 +672,6 @@ class PullQueue(Queue):
       parameters = {'app': self.app, 'queue': self.name}
       results = self.db_access.session.execute(query_tasks, parameters)
     return results
-
-  def _query_available_tasks(self, num_tasks, group_by_tag=False, tag=None):
-    """ Query the cache or index table for available tasks.
-
-    Args:
-      num_tasks: An integer specifying the number of tasks to lease.
-      group_by_tag: A boolean indicating that only tasks of one tag should
-        be leased.
-      tag: A string containing the tag for the task.
-
-    Returns:
-      A list of index results.
-    """
-    # If the request is larger than the max cache size, don't use the cache.
-    if num_tasks > self.MAX_CACHE_SIZE:
-      return self._query_index(num_tasks, group_by_tag, tag)
-
-    with self.index_cache_lock:
-      if group_by_tag:
-        if tag not in self.index_cache['by_tag']:
-          self.index_cache['by_tag'][tag] = {}
-        tag_cache = self.index_cache['by_tag'][tag]
-      else:
-        tag_cache = self.index_cache['global']
-
-      # If results have never been fetched, populate the cache.
-      if not tag_cache:
-        results = self._query_index(self.MAX_CACHE_SIZE, group_by_tag, tag)
-        tag_cache['queue'] = deque(results)
-        tag_cache['last_fetch'] = datetime.datetime.now()
-        tag_cache['last_results'] = len(tag_cache['queue'])
-
-      # If 0 results were fetched recently, don't try fetching again.
-      recently = datetime.datetime.now() - datetime.timedelta(
-        seconds=self.EMPTY_RESULTS_COOLDOWN)
-      if (not tag_cache['queue'] and tag_cache['last_results'] == 0 and
-          tag_cache['last_fetch'] > recently):
-        return []
-
-      # If the cache is outdated or insufficient, update it.
-      outdated = datetime.datetime.now() - datetime.timedelta(
-        seconds=self.MAX_CACHE_DURATION)
-      if (num_tasks > len(tag_cache['queue']) or
-          tag_cache['last_fetch'] < outdated):
-        results = self._query_index(self.MAX_CACHE_SIZE, group_by_tag, tag)
-        tag_cache['queue'] = deque(results)
-        tag_cache['last_fetch'] = datetime.datetime.now()
-        tag_cache['last_results'] = len(tag_cache['queue'])
-
-      results = []
-      for _ in range(num_tasks):
-        try:
-          results.append(tag_cache['queue'].popleft())
-        except IndexError:
-          # The queue is empty.
-          break
-
-      return results
 
   def _get_earliest_tag(self):
     """ Get the tag with the earliest ETA.
@@ -911,10 +873,6 @@ class PullQueue(Queue):
 
     if self.task_retry_limit != 0 and task.expired(self.task_retry_limit):
       self._delete_task_and_index(task)
-      return
-
-    if task.leaseTimestamp != index.eta:
-      self._update_index(index, task)
 
   def _update_stats(self):
     """ Write queue metadata for keeping track of statistics. """
@@ -940,26 +898,11 @@ class PullQueue(Queue):
     stats = {}
 
     if 'totalTasks' in fields:
-      select_count = """
-        SELECT COUNT(*) FROM pull_queue_tasks
-        WHERE token(app, queue, id) >= token(%(app)s, %(queue)s, '')
-        AND token(app, queue, id) < token(%(app)s, %(next_queue)s, '')
-      """
-      parameters = {'app': self.app, 'queue': self.name,
-                    'next_queue': next_key(self.name)}
-      stats['totalTasks'] = session.execute(select_count, parameters)[0].count
+      stats['totalTasks'] = self.total_tasks()
 
     if 'oldestTask' in fields:
-      select_oldest = """
-        SELECT eta FROM pull_queue_tasks_index
-        WHERE token(app, queue, eta) >= token(%(app)s, %(queue)s, 0)
-        AND token(app, queue, eta) < token(%(app)s, %(next_queue)s, 0)
-        LIMIT 1
-      """
-      parameters = {'app': self.app, 'queue': self.name,
-                    'next_queue': next_key(self.name)}
-      oldest_eta = session.execute(select_oldest, parameters)[0].eta
       epoch = datetime.datetime.utcfromtimestamp(0)
+      oldest_eta = self.oldest_eta() or epoch
       stats['oldestTask'] = int((oldest_eta - epoch).total_seconds())
 
     if 'leasedLastMinute' in fields:
