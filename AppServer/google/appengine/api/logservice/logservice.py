@@ -780,7 +780,6 @@ class AppLog(object):
 
 _FETCH_KWARGS = frozenset(['prototype_request', 'timeout', 'batch_size'])
 
-
 @datastore_rpc._positional(0)
 def fetch(start_time=None,
           end_time=None,
@@ -789,6 +788,7 @@ def fetch(start_time=None,
           include_incomplete=False,
           include_app_logs=False,
           version_ids=None,
+          request_ids=None,
           **kwargs):
   """Returns an iterator yielding an application's request and application logs.
 
@@ -821,6 +821,8 @@ def fetch(start_time=None,
       results, as a boolean.  Defaults to False.
     version_ids: A list of version ids whose logs should be queried against.
       Defaults to the application's current version id only.
+    request_ids: If not None, indicates that instead of a time-based scan,
+      logs for the specified requests should be returned.
 
   Returns:
     An iterable object containing the logs that the user has queried for.
@@ -884,6 +886,20 @@ def fetch(start_time=None,
 
   request.version_id_list()[:] = version_ids
 
+
+  if request_ids is not None:
+    if not isinstance(request_ids, list):
+      raise InvalidArgumentError('request_ids must be a list')
+    if not request_ids:
+      raise InvalidArgumentError('request_ids must not be empty')
+    if len(request_ids) != len(set(request_ids)):
+      raise InvalidArgumentError('request_ids must not contain duplicates')
+    for request_id in request_ids:
+      if not _REQUEST_ID_RE.match(request_id):
+        raise InvalidArgumentError(
+          '%s is not a valid request log id' % request_id)
+    request.request_id_list()[:] = request_ids
+
   prototype_request = kwargs.get('prototype_request')
   if prototype_request:
     if not isinstance(prototype_request, log_service_pb.LogReadRequest):
@@ -908,3 +924,4 @@ def fetch(start_time=None,
     request.set_count(batch_size)
 
   return _LogQueryResult(request, timeout=timeout)
+
