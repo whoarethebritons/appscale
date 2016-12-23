@@ -79,6 +79,8 @@ _MAJOR_VERSION_ID_PATTERN = r'^(?:(?:(%s):)?)(%s)$' % (SERVER_ID_RE_STRING,
 
 _MAJOR_VERSION_ID_RE = re.compile(_MAJOR_VERSION_ID_PATTERN)
 
+_REQUEST_ID_PATTERN = r'^[\da-fA-F]+$'
+_REQUEST_ID_RE = re.compile(_REQUEST_ID_PATTERN)
 
 class Error(Exception):
   """Base error class for this module."""
