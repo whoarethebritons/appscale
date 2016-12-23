@@ -275,7 +275,7 @@ def decode_key(encoded_key):
   for encoded_element in key_parts[2].split(dbconstants.KIND_SEPARATOR):
     if not encoded_element:
       continue
-    kind, element_id = encoded_element.split(':')
+    kind, element_id = encoded_element.split(':', 1)
     element = path.add_element()
     element.set_type(kind)
 
