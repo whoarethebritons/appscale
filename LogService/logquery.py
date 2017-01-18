@@ -33,6 +33,8 @@ def get_query(args, offset=None):
   if args.end:
     query.endTime = int(args.end)
   if args.ids:
+    if isinstance(args.ids, basestring):
+      args.ids = [args.ids]
     query.requestIds = args.ids
   query.versionIds = [args.version]
   query.count = 1000 if args.count >= 1000 else args.count
