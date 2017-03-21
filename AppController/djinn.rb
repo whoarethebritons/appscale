@@ -1278,18 +1278,19 @@ class Djinn
   def update_node_info_cache()
     Thread.new {
       ip = get_shadow.private_ip
-      uri = URI("http://#{ip}:#{HermesService.getport()}/stats")
+      uri = URI("http://#{ip}:#{HermesService.getport()}/cluster_stats")
       string_stats = (Net::HTTP.post_form(uri, 'secret' => @@secret))
       stats = JSON.load(string_stats.body)
-      Djinn.log_info("Stats as a #{stats.class}: #{stats['cluster']}")
+      Djinn.log_info("Stats as a #{stats.class}: #{stats}")
       if stats.key?("success") and stats['success'] == false
         Djinn.log_warn("Invalid secret when trying to communicate with Hermes" +
           " stats")
         return
       end
       STATUS_LOCK.synchronize {
-        @cluster_stats = stats['cluster'].nil? ? [] : stats['cluster']
-    }
+        Djinn.log_debug("Changing Stats: #{stats['body']}")
+        @cluster_stats = stats['body']
+      }
     }
   end
 
@@ -2222,19 +2223,19 @@ class Djinn
           Djinn.log_info("--- This deployment has autoscale disabled.")
         end
         ip = my_node.private_ip
-        uri = URI("http://#{ip}:#{HermesService.getport()}/stats")
+        uri = URI("http://#{ip}:#{HermesService.getport()}/nodde_stats")
         string_stats = (Net::HTTP.post_form(uri, 'secret' => @@secret))
         stats = JSON.load(string_stats.body)
-        Djinn.log_info("Stats as a #{stats.class}: #{stats['node']}")
+        Djinn.log_info("Stats as a #{stats.class}: #{stats}")
         if stats.key?("success") and stats['success'] == false
           Djinn.log_warn("Invalid secret when trying to communicate with" +
                              "Hermes stats")
         else
-          node_stats = stats['node']
+          node_stats = stats['body']
           available_memory = node_stats['memory']['available']/MEGABYTE_DIVISOR
-          Djinn.log_info("--- Node at #{stats['public_ip']} has " +
-                             "#{available_memory} MB memory available " +
-                             "and knows about these apps #{stats['apps']}.")
+          Djinn.log_info("--- Node at #{node_stats['public_ip']} has " +
+                             "#{available_memory} MB memory available and" +
+                              " knows about these apps #{node_stats['apps']}.")
           last_print = Time.now.to_i
         end
       end

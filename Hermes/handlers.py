@@ -147,11 +147,11 @@ class TaskHandler(RequestHandler):
 
     self.set_status(hermes_constants.HTTP_Codes.HTTP_OK)
 
-class StatsHandler(RequestHandler):
+class NodeStatsHandler(RequestHandler):
   """ Main handler class. """
 
   # The path for this handler.
-  PATH = "/stats"
+  PATH = "/node_stats"
 
   def initialize(self, STATS, secret):
     self.STATS = STATS
@@ -164,4 +164,25 @@ class StatsHandler(RequestHandler):
       logging.error(json.dumps(self.BAD_SECRET_MESSAGE))
       self.write(json.dumps(self.BAD_SECRET_MESSAGE))
     else:
-      self.write(json.dumps(self.STATS))
+      response = {'success': True, 'body': self.STATS.get('node', {})}
+      self.write(json.dumps(response))
+
+class ClusterStatsHandler(RequestHandler):
+  """ Main handler class. """
+
+  # The path for this handler.
+  PATH = "/cluster_stats"
+
+  def initialize(self, STATS, secret):
+    self.STATS = STATS
+    self.secret = secret
+    self.BAD_SECRET_MESSAGE = {'success': False, 'reason': 'bad secret'}
+
+  def post(self):
+    """ Main GET method. Reports the status of the server. """
+    if self.get_argument('secret') != self.secret:
+      logging.error(json.dumps(self.BAD_SECRET_MESSAGE))
+      self.write(json.dumps(self.BAD_SECRET_MESSAGE))
+    else:
+      response = {'success': True, 'body': self.STATS.get('cluster', [])}
+      self.write(json.dumps(response))

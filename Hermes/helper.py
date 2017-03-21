@@ -299,13 +299,13 @@ def update_cluster_cache():
   for ip in appscale_info.get_all_ips():
     if ip == my_private:
       continue
-    request = create_request("http://{ip}:{port}/stats"
+    request = create_request("http://{ip}:{port}/node_stats"
                              .format(ip=ip, port=hermes_constants.HERMES_PORT),
                              method='POST', body=urllib.urlencode(secret))
     response = urlfetch(request)
     if response.get(JSONTags.SUCCESS):
       node_info = json.loads(response.get(JSONTags.BODY))
-      cluster_stats.append(node_info['node'])
+      cluster_stats.append(node_info.get('body'))
   return cluster_stats
 
 def report_status(task, task_id, status):

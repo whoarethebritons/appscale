@@ -22,7 +22,8 @@ import tornado.web
 import urllib
 
 from handlers import MainHandler
-from handlers import StatsHandler
+from handlers import NodeStatsHandler
+from handlers import ClusterStatsHandler
 from handlers import TaskHandler
 from helper import JSONTags
 
@@ -258,8 +259,10 @@ def main():
   app = tornado.web.Application([
     (MainHandler.PATH, MainHandler),
     (TaskHandler.PATH, TaskHandler),
-    (StatsHandler.PATH, StatsHandler, {'STATS': STATS,
-                                       'secret': appscale_info.get_secret()})
+    (NodeStatsHandler.PATH, NodeStatsHandler, {'STATS': STATS,
+                                         'secret': appscale_info.get_secret()}),
+    (ClusterStatsHandler.PATH, ClusterStatsHandler, {'STATS': STATS,
+                                          'secret': appscale_info.get_secret()})
   ], debug=False)
 
   try:
