@@ -16,7 +16,7 @@ module HermesService
     start_cmd = "/usr/bin/python2 #{hermes}"
     stop_cmd = "/usr/bin/python2 #{APPSCALE_HOME}/scripts/stop_service.py " +
           "#{hermes} /usr/bin/python2"
-    MonitInterface.start(:hermes, start_cmd, stop_cmd, [HERMES_PORT], {},
+    MonitInterface.start(:hermes, start_cmd, stop_cmd, nil, {},
                          start_cmd, nil, nil, nil)
   end
 
