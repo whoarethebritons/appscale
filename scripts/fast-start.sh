@@ -19,6 +19,7 @@ IP="$(which ip)"
 APPSCALE_CMD="$(which appscale)"
 APPSCALE_UPLOAD="$(which appscale-upload-app)"
 GOOGLE_METADATA="http://169.254.169.254/computeMetadata/v1/instance/"
+ALIYUN_METADATA="http://100.100.100.200/latest/meta-data"
 GUESTBOOK_URL="http://www.appscale.com/wp-content/uploads/2014/07/guestbook.tar.gz"
 GUESTBOOK_APP="/root/guestbook.tar.gz"
 USE_DEMO_APP="Y"
@@ -122,6 +123,8 @@ elif ${CURL} -iLs metadata.google.internal |grep 'Metadata-Flavor: Google' > /de
     PROVIDER="GCE"
 elif [ "$(${CURL} -s -o /dev/null -w "%{http_code}" $AZURE_METADATA)" = "200" ] ; then
     PROVIDER="Azure"
+elif [ "$(${CURL} -s -o /dev/null -w "%{http_code}" $ALIYUN_METADATA)" = "200" ] ; then
+    PROVIDER="Aliyun"
 else
     # Get the public and private IP of this instance.
     PUBLIC_IP="$(ec2metadata --public-ipv4 2> /dev/null)"
@@ -183,6 +186,12 @@ case "$PROVIDER" in
     DEFAULT_DEV="$($IP route list scope global | sed 's/.*dev \b\([A-Za-z0-9_]*\).*/\1/' | uniq)"
     PUBLIC_IP="$(wget http://ipinfo.io/ip -qO -)"
     PRIVATE_IP="$($IP addr show dev ${DEFAULT_DEV} scope global | sed -n 's;.*inet \([0-9.]*\).*;\1;p')"
+    ADMIN_EMAIL="a@a.com"
+    ADMIN_PASSWD="$(cat /etc/hostname)"
+    ;;
+"Aliyun")
+    PUBLIC_IP="$(${CURL} ${ALIYUN_METADATA}/public-ipv4)"
+    PRIVATE_IP="$(${CURL} ${ALIYUN_METADATA}/private-ipv4)"
     ADMIN_EMAIL="a@a.com"
     ADMIN_PASSWD="$(cat /etc/hostname)"
     ;;
