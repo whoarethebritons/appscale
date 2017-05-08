@@ -190,7 +190,7 @@ case "$PROVIDER" in
     ADMIN_PASSWD="$(cat /etc/hostname)"
     ;;
 "Aliyun")
-    PUBLIC_IP="$(${CURL} ${ALIYUN_METADATA}/public-ipv4)"
+    PUBLIC_IP="$(${CURL} ${ALIYUN_METADATA}/eipv4)"
     PRIVATE_IP="$(${CURL} ${ALIYUN_METADATA}/private-ipv4)"
     ADMIN_EMAIL="a@a.com"
     ADMIN_PASSWD="$(cat /etc/hostname)"
