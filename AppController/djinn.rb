@@ -5798,7 +5798,9 @@ HOSTS
   #   remove_old: boolean to force a re-setup of the app from the tarball
   def setup_app_dir(app, remove_old=false)
     app_dir = "#{HelperFunctions.get_app_path(app)}/app"
-    app_path = "#{PERSISTENT_MOUNT_POINT}/apps/#{app}.tar.gz"
+    version_details = ZKInterface.get_version_details(
+      app, DEFAULT_SERVICE, DEFAULT_VERSION)
+    app_path = version_details['deployment']['zip']['sourceUrl']
     error_msg = ""
 
     if remove_old
@@ -6001,7 +6003,9 @@ HOSTS
 
   # Returns true on success, false otherwise
   def copy_app_to_local(appname)
-    app_path = "#{PERSISTENT_MOUNT_POINT}/apps/#{appname}.tar.gz"
+    version_details = ZKInterface.get_version_details(
+      appname, DEFAULT_SERVICE, DEFAULT_VERSION)
+    app_path = version_details['deployment']['zip']['sourceUrl']
 
     if File.exists?(app_path)
       Djinn.log_debug("I already have a copy of app #{appname} - won't grab it remotely")
