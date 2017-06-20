@@ -16,6 +16,7 @@ import urllib2
 from xml.etree import ElementTree
 
 from M2Crypto import SSL
+from kazoo.client import KazooClient
 
 from appscale.common import (
   appscale_info,
@@ -789,7 +790,11 @@ def is_config_valid(config):
 ################################
 if __name__ == "__main__":
   file_io.set_logging_format()
-  deployment_config = DeploymentConfig(appscale_info.get_zk_locations_string())
+
+  zk_ips = appscale_info.get_zk_node_ips()
+  zk_client = KazooClient(hosts=','.join(zk_ips))
+  zk_client.start()
+  deployment_config = DeploymentConfig(zk_client)
 
   INTERNAL_IP = appscale_info.get_private_ip()
   SERVER = SOAPpy.SOAPServer((INTERNAL_IP, constants.APP_MANAGER_PORT))
