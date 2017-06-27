@@ -512,6 +512,13 @@ class Djinn
   ADMIN_SERVER_PORT = 17442
 
 
+  # The ZooKeeper node that keeps track of where AppServers should run.
+  INSTANCE_ASSIGNMENTS_NODE = '/appscale/instance_assignments'
+
+
+  INSTANCES_NODE = '/appscale/instances'
+
+
   # List of parameters allowed in the set_parameter (and in AppScalefile
   # at this time). If a default value is specified, it will be used if the
   # parameter is unspecified. The last value (a boolean) indicates if the
@@ -3463,6 +3470,7 @@ class Djinn
     if my_node.is_shadow?
       pick_zookeeper(@zookeeper_data)
       set_custom_config
+      ZKInterface.ensure_path(INSTANCE_ASSIGNMENTS_NODE)
       start_log_server
     else
       stop_log_server
@@ -4334,11 +4342,12 @@ HOSTS
     my_private = my_node.private_ip
     login_ip = @options['login']
 
-    @apps_loaded.each { |app|
+    ZKInterface.get_versions.each { |version_key|
+      app, service_id, version_id = version_key.split('_')
 
       begin
         version_details = ZKInterface.get_version_details(
-          app, DEFAULT_SERVICE, DEFAULT_VERSION)
+          app, service_id, version_id)
       rescue VersionNotFound
         Djinn.log_debug(
           "Removing routing for #{app} since it should not be running.")
@@ -4355,19 +4364,13 @@ HOSTS
 
       # Check that we have the application information needed to
       # regenerate the routing configuration.
-      appservers = []
-      unless @app_info_map[app].nil? || @app_info_map[app]['appengine'].nil?
+      appservers = ZKInterface.get_instances(
+        app, service_id, version_id)
+      unless appservers.empty?
         Djinn.log_debug("Regenerating nginx config for app #{app}, on http " +
           "port #{http_port}, https port #{https_port}, and haproxy port " +
           "#{proxy_port}.")
 
-        # Let's see if we already have any AppServers running for this
-        # application. We count also the ones we need to terminate.
-        @app_info_map[app]['appengine'].each { |location|
-          _, port = location.split(":")
-          next if Integer(port) < 0
-          appservers << location
-        }
         unless @terminated[app].nil?
           to_remove = []
           @terminated[app].each { |location, when_detected|
@@ -4406,7 +4409,7 @@ HOSTS
 
         # If nginx config files have been updated, we communicate the app's
         # ports to the UserAppServer to make sure we have the latest info.
-        if Nginx.write_fullproxy_app_config(app, http_port, https_port,
+        if Nginx.write_fullproxy_app_config(version_key, http_port, https_port,
             my_public, my_private, proxy_port, static_handlers, login_ip,
             app_language)
           uac = UserAppClient.new(my_node.private_ip, @@secret)
@@ -4420,7 +4423,7 @@ HOSTS
           end
         end
 
-        HAProxy.update_app_config(my_private, app, proxy_port, appservers)
+        HAProxy.update_app_config(my_private, version_key, proxy_port, appservers)
       end
 
       # We need to set the drain on haproxy on the terminated AppServers,
@@ -5210,14 +5213,15 @@ HOSTS
   #   start for lack of resources.
   def scale_appservers
     needed_appservers = 0
-    ZKInterface.get_app_names.each { |app_name|
+    ZKInterface.get_versions.each { |version_key|
+      app_name = version_key.split('_')[0]
       initialize_scaling_info_for_app(app_name)
 
       # Get the desired changes in the number of AppServers.
-      delta_appservers = get_scaling_info_for_app(app_name)
+      delta_appservers = get_scaling_info_for_app(version_key)
       if delta_appservers > 0
         Djinn.log_debug("Considering scaling up app #{app_name}.")
-        unless try_to_scale_up(app_name, delta_appservers)
+        unless try_to_scale_up(version_key, delta_appservers)
           needed_appservers += delta_appservers
         end
       elsif delta_appservers < 0
@@ -5443,10 +5447,11 @@ HOSTS
   #   an Integer: the number of AppServers desired (a positive number
   #     means we want more, a negative that we want to remove some, and 0
   #     for no changes).
-  def get_scaling_info_for_app(app_name)
+  def get_scaling_info_for_app(version_key)
+    app_name, service_id, version_id = version_key.split('_')
     begin
       version_details = ZKInterface.get_version_details(
-        app_name, DEFAULT_SERVICE, DEFAULT_VERSION)
+        app_name, service_id, version_id)
     rescue VersionNotFound
       Djinn.log_info("Not scaling app #{app_name} since we aren't " +
                      'hosting it anymore.')
@@ -5455,11 +5460,17 @@ HOSTS
 
     # Let's make sure we have the minimum number of AppServers running.
     Djinn.log_debug("Evaluating app #{app_name} for scaling.")
-    if @app_info_map[app_name]['appengine'].nil?
-      num_appengines = 0
-    else
-      num_appengines = @app_info_map[app_name]['appengine'].length
-    end
+    instance_assignments = ZKInterface.get_instance_assignments(
+      get_all_appengine_nodes)
+    num_appengines = 0
+    Djinn.log_info("Instance assignments: #{instance_assignments}")
+    instance_assignments.each { |revision_key, assignments|
+      project_id, assignment_service, assignment_version = revision_key.split('_')
+      next unless project_id == app_name
+      next unless assignment_service == service_id
+      next unless assignment_version == version_id
+      assignments.each { |_, instance_count| num_appengines += instance_count }
+    }
 
     scaling_params = version_details.fetch('automaticScaling', {})
     min = scaling_params.fetch('minTotalInstances',
@@ -5605,7 +5616,8 @@ HOSTS
   #   delta_appservers: The desired number of new AppServers.
   # Returns:
   #   A boolean indicating if the desired AppServers were started.
-  def try_to_scale_up(app_name, delta_appservers)
+  def try_to_scale_up(version_key, delta_appservers)
+    app_name, service_id, version_id = version_key.split('_')
     # Select an appengine machine if it has enough resources to support
     # another AppServer for this app.
     available_hosts = []
@@ -5616,39 +5628,44 @@ HOSTS
     appservers_count = {}
     current_hosts = Set.new()
     max_memory = {}
-    @app_info_map.each_pair { |appid, app_info|
-      next if app_info['appengine'].nil?
+
+    current_assignments = ZKInterface.get_instance_assignments(
+      get_all_appengine_nodes)
+    current_assignments.each { |revision_key, assignments|
+      appid, assignment_service, assignment_version = revision_key.split('_')
 
       # We need to keep track of the theoretical max memory used by all
       # the AppServervers.
       version_details = ZKInterface.get_version_details(
-        appid, DEFAULT_SERVICE, DEFAULT_VERSION)
+        appid, assignment_service, assignment_version)
       max_app_mem = Integer(@options['max_memory'])
       if version_details.key?('instanceClass')
         instance_class = version_details['instanceClass'].to_sym
         max_app_mem = INSTANCE_CLASSES.fetch(instance_class, max_app_mem)
       end
 
-      app_info['appengine'].each { |location|
-        host, _ = location.split(":")
-        if appservers_count[host].nil?
-          appservers_count[host] = 1
-          max_memory[host] = max_app_mem
-        else
-          appservers_count[host] += 1
-          max_memory[host] += max_app_mem
-        end
+      assignments.each { |host, instance_count|
+        appservers_count[host] = 0 unless appservers_count.key?(host)
+        max_memory[host] = 0 unless max_memory.key?(host)
+
+        appservers_count[host] += instance_count
+        max_memory[host] += (max_app_mem * instance_count)
 
         # We also see which host is running the application we need to
         # scale. We will need later on to prefer hosts not running this
         # app.
-        current_hosts << host if app_name == appid
+        next unless app_name == appid
+        next unless assignment_service == service_id
+        next unless assignment_version == version_id
+        (1..instance_count).each { |_|
+          current_hosts << host
+        }
       }
     }
 
     # Get the memory limit for this application.
     version_details = ZKInterface.get_version_details(
-      app_name, DEFAULT_SERVICE, DEFAULT_VERSION)
+      app_name, service_id, version_id)
     max_app_mem = Integer(@options['max_memory'])
     if version_details.key?('instanceClass')
       instance_class = version_details['instanceClass'].to_sym
@@ -5730,7 +5747,8 @@ HOSTS
       available_hosts.delete_at(available_hosts.index(appserver_to_use))
 
       Djinn.log_info("Adding a new AppServer on #{appserver_to_use} for #{app_name}.")
-      @app_info_map[app_name]['appengine'] << "#{appserver_to_use}:-1"
+      ZKInterface.add_appserver(app_name, service_id, version_details,
+                                appserver_to_use, max_app_mem)
 
       # If we ran our of available hosts, we'll have to wait for the
       # next cycle to add more AppServers.

@@ -224,6 +224,18 @@ public class DevAppServerMain
             {
                 System.setProperty("APP_NAME", getValue());
             }
+        }, new DevAppServerOption(main, null, "SERVICE_ID", false)
+        {
+            public void apply()
+            {
+                System.setProperty("SERVICE_ID", getValue());
+            }
+        }, new DevAppServerOption(main, null, "VERSION_ID", false)
+        {
+            public void apply()
+            {
+                System.setProperty("VERSION_ID", getValue());
+            }
         }, new DevAppServerOption(main, null, "NGINX_ADDRESS", false)
         {
             public void apply()

@@ -427,7 +427,8 @@ def main():
   zk_ips = appscale_info.get_zk_node_ips()
   zk_client = KazooClient(hosts=','.join(zk_ips))
   zk_client.start()
-  deployment_config = DeploymentConfig(zk_client)
+  deployment_config = DeploymentConfig()
+  deployment_config.init(zk_client)
   setup_env()
 
   http_server = tornado.httpserver.HTTPServer(

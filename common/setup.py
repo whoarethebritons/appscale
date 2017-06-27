@@ -11,7 +11,8 @@ setup(
   platforms='Posix',
   install_requires=[
     'kazoo',
-    'PyYAML'
+    'PyYAML',
+    'tornado'
   ],
   classifiers=[
     'Development Status :: 5 - Production/Stable',

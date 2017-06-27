@@ -488,6 +488,24 @@ class ZKInterface
   end
 
 
+  def self.get_versions()
+    active_versions = []
+    projects = self.get_children('/appscale/projects')
+    projects.each { |project_id|
+      services = self.get_children("/appscale/projects/#{project_id}/services")
+      services.each { |service_id|
+        versions = self.get_children(
+          "/appscale/projects/#{project_id}/services/#{service_id}/versions")
+        versions.each { |version_id|
+          version_key = [project_id, service_id, version_id].join('_')
+          active_versions << version_key
+        }
+      }
+    }
+    return active_versions
+  end
+
+
   def self.get_version_details(project_id, service_id, version_id)
     version_node = "/appscale/projects/#{project_id}/services/#{service_id}" +
       "/versions/#{version_id}"
@@ -498,6 +516,94 @@ class ZKInterface
             "#{project_id}/#{service_id}/#{version_id} does not exist"
     end
     return JSON.load(version_details_json)
+  end
+
+
+  def self.get_instance_assignments(appengine_machines)
+    revision_assignments = {}
+    appengine_machines.each { |machine|
+      assignments_node = "#{Djinn::INSTANCE_ASSIGNMENTS_NODE}/#{machine}"
+      begin
+        current_assignments_json = self.get(assignments_node)
+        Djinn.log_info(
+          "Current assignments for #{machine}: #{current_assignments_json}")
+        current_assignments = JSON.load(current_assignments_json)
+      rescue FailedZooKeeperOperationException
+        current_assignments = {}
+      end
+
+      current_assignments.each { |revision_key, assignment|
+        unless revision_assignments.key?(revision_key)
+          revision_assignments[revision_key] = {}
+        end
+        instance_count = assignment['instanceCount']
+        revision_assignments[revision_key][machine] = instance_count
+      }
+    }
+    return revision_assignments
+  end
+
+  def self.get_instances(project_id, service_id, version_id)
+    requested_version_key = [project_id, service_id, version_id].join('_')
+    revisions = self.get_children(Djinn::INSTANCES_NODE)
+
+    relevant_revisions = []
+    revisions.each { |revision|
+      version_key = revision.split('_')[0..2].join('_')
+      relevant_revisions << revision if version_key == requested_version_key
+    }
+    return [] if relevant_revisions.empty?
+
+    latest_revision = relevant_revisions[0]
+    relevant_revisions.each { |revision|
+      latest_revision = revision if revision > latest_revision
+    }
+
+    return self.get_children("#{Djinn::INSTANCES_NODE}/#{latest_revision}")
+  end
+
+  def self.add_appserver(project_id, service_id, version_details, ip_address,
+                         max_app_mem)
+    assignments_node = "#{Djinn::INSTANCE_ASSIGNMENTS_NODE}/#{ip_address}"
+    begin
+      current_assignments_json = self.get(assignments_node)
+      current_assignments = JSON.load(current_assignments_json)
+      create_node = false
+    rescue FailedZooKeeperOperationException
+      current_assignments = {}
+      create_node = true
+    end
+
+    if project_id == 'appscaledashboard'
+      log_size = 10 * 1024 * 1024
+    else
+      log_size = 250 * 1024 * 1024
+    end
+
+    version_key = [project_id, service_id, version_details['id'],
+                   version_details['revision']].join('_')
+    if current_assignments.key?(version_key)
+      current_assignments[version_key]['instances'] += 1
+    else
+      current_assignments[version_key] = {
+        :instanceCount => 1,
+        :runtime => version_details['runtime'],
+        :sourceArchive => version_details['deployment']['zip']['sourceUrl'],
+        :maxMemory => max_app_mem,
+        :logSize => log_size
+      }
+    end
+
+    # TODO: Add condition to update to make sure node has not been altered.
+    if create_node
+      self.run_zookeeper_operation {
+        @@zk.create(:path => assignments_node,
+                    :ephemeral => NOT_EPHEMERAL,
+                    :data => JSON.dump(current_assignments))
+      }
+    else
+      self.set(assignments_node, JSON.dump(current_assignments), NOT_EPHEMERAL)
+    end
   end
 
 

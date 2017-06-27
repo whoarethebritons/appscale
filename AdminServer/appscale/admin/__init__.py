@@ -14,6 +14,7 @@ from appscale.common.constants import (
   LOG_FORMAT,
   ZK_PERSISTENT_RECONNECTS
 )
+from appscale.common.appscale_utils import get_md5
 from appscale.common.ua_client import UAClient
 from appscale.common.ua_client import UAException
 from appscale.common.unpackaged import APPSCALE_PYTHON_APPSERVER
@@ -41,6 +42,7 @@ from .operation import (
   UpdateVersionOperation
 )
 from .operations_cache import OperationsCache
+from .revision_manager.source_manager import extract_source
 
 sys.path.append(APPSCALE_PYTHON_APPSERVER)
 from google.appengine.api.appcontroller_client import AppControllerException
@@ -237,10 +239,6 @@ class VersionsHandler(BaseHandler):
     if version['runtime'] in [constants.JAVA, constants.PYTHON27]:
       utils.assert_fields_in_resource(['threadsafe'], 'version', version)
 
-    if version['id'] != constants.DEFAULT_VERSION:
-      raise CustomHTTPError(HTTPCodes.BAD_REQUEST,
-                            message='Invalid version ID')
-
     if 'basicScaling' in version or 'manualScaling' in version:
       raise CustomHTTPError(HTTPCodes.BAD_REQUEST,
                             message='Only automaticScaling is supported')
@@ -360,7 +358,7 @@ class VersionsHandler(BaseHandler):
 
     return new_version
 
-  def begin_deploy(self, project_id):
+  def begin_deploy(self, project_id, service_id, version_id):
     """ Triggers the deployment process.
     
     Args:
@@ -375,34 +373,45 @@ class VersionsHandler(BaseHandler):
       logging.exception(message)
       raise CustomHTTPError(HTTPCodes.INTERNAL_ERROR, message=message)
 
+    version_key = '_'.join([project_id, service_id, version_id])
     try:
-      self.acc.update([project_id])
+      self.acc.update([version_key])
     except AppControllerException as error:
       message = 'Error while updating application: {}'.format(error)
       raise CustomHTTPError(HTTPCodes.INTERNAL_ERROR, message=message)
 
-  def identify_as_hoster(self, project_id, source_location):
+  @gen.coroutine
+  def identify_as_hoster(self, project_id, service_id, version):
     """ Marks this machine as having a version's source code.
 
     Args:
       project_id: A string specifying a project ID.
-      source_location: A string specifying the location of the version's
-        source archive.
+      service_id: A string specifying a service ID.
+      version: A dictionary containing version details.
     """
+    revision_key = '_'.join([project_id, service_id, version['id'],
+                             str(version['revision'])])
     private_ip = appscale_info.get_private_ip()
-    hoster_node = '/apps/{}/{}'.format(project_id, private_ip)
+    hoster_node = '/apps/{}/{}'.format(revision_key, private_ip)
+    source_location = version['deployment']['zip']['sourceUrl']
+
+    md5 = yield self.thread_pool.submit(get_md5, source_location)
+    archive_details = {'location': source_location, 'md5': md5}
 
     try:
-      self.zk_client.create(hoster_node, str(source_location), ephemeral=True,
+      self.zk_client.create(hoster_node, json.dumps(archive_details),
                             makepath=True)
     except NodeExistsError:
-      self.zk_client.set(hoster_node, str(source_location))
+      self.zk_client.set(hoster_node, json.dumps(archive_details))
 
-    # Remove other hosters that have old code.
-    hosters = self.zk_client.get_children('/apps/{}'.format(project_id))
-    old_hosters = [hoster for hoster in hosters if hoster != private_ip]
-    for hoster in old_hosters:
-      self.zk_client.delete('/apps/{}/{}'.format(project_id, hoster))
+    # Remove old revision nodes.
+    revision_prefix = '_'.join([project_id, service_id, version['id']])
+    old_versions = [node for node in self.zk_client.get_children('/apps')
+                    if node.startswith(revision_prefix)
+                    and node < revision_key]
+    for node in old_versions:
+      logging.info('Removing hosting entry for {}'.format(node))
+      self.zk_client.delete('/apps/{}'.format(node), recursive=True)
 
   @gen.coroutine
   def post(self, project_id, service_id):
@@ -420,13 +429,14 @@ class VersionsHandler(BaseHandler):
     if not project_exists:
       self.create_project(project_id, user, version['runtime'])
 
-    if service_id != constants.DEFAULT_SERVICE:
-      raise CustomHTTPError(HTTPCodes.BAD_REQUEST, message='Invalid service')
-
     self.ensure_user_is_owner(project_id, user)
 
     try:
-      utils.extract_source(version, project_id)
+      revision_key = '_'.join([project_id, service_id, version['id'],
+                               str(version['revision'])])
+      yield self.thread_pool.submit(
+        extract_source, revision_key,
+        version['deployment']['zip']['sourceUrl'], version['runtime'])
     except IOError:
       message = '{} does not exist'.format(
         version['deployment']['zip']['sourceUrl'])
@@ -434,7 +444,7 @@ class VersionsHandler(BaseHandler):
 
     new_path = utils.claim_ownership_of_source(project_id, service_id, version)
     version['deployment']['zip']['sourceUrl'] = new_path
-    self.identify_as_hoster(project_id, new_path)
+    yield self.identify_as_hoster(project_id, service_id, version)
     utils.remove_old_archives(project_id, service_id, version)
 
     yield self.thread_pool.submit(self.version_update_lock.acquire)
@@ -443,7 +453,7 @@ class VersionsHandler(BaseHandler):
     finally:
       self.version_update_lock.release()
 
-    self.begin_deploy(project_id)
+    self.begin_deploy(project_id, service_id, version['id'])
 
     operation = CreateVersionOperation(project_id, service_id, version)
     operations[operation.id] = operation

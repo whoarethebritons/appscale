@@ -1,8 +1,16 @@
 import logging
 import subprocess
 import time
+import urllib
+from xml.etree import ElementTree
+from datetime import timedelta
 
+from . import constants
 from . import misc
+
+from tornado import gen
+from tornado.httpclient import AsyncHTTPClient
+from tornado.ioloop import IOLoop
 
 """ 
 This file contains top level functions for starting and stopping 
@@ -118,3 +126,84 @@ def restart(watch):
   logging.info("Restarting watch {0}".format(watch))
   return run_with_retry([MONIT, 'restart', '-g', watch])
 
+
+class ProcessNotFound(Exception):
+  pass
+
+
+def process_status(response, process_name):
+  root = ElementTree.XML(response)
+  for service in root.iter('service'):
+    name = service.find('name').text
+    if name != process_name:
+      continue
+
+    monitored = int(service.find('monitor').text)
+    status = int(service.find('status').text)
+    if monitored == 0:
+      return constants.MonitStates.UNMONITORED
+    elif monitored == 1:
+      if status == 0:
+        return constants.MonitStates.RUNNING
+      else:
+        return constants.MonitStates.STOPPED
+    else:
+      return constants.MonitStates.PENDING
+
+  raise ProcessNotFound('{} not found in monit status'.format(process_name))
+
+
+class MonitOperator(object):
+  def __init__(self, thread_pool):
+    self.reload_future = None
+    self.thread_pool = thread_pool
+    self.client = AsyncHTTPClient()
+
+  @gen.coroutine
+  def _reload(self):
+    yield gen.sleep(1)
+    yield self.thread_pool.submit(subprocess.check_call, ['monit', 'reload'])
+
+  @gen.coroutine
+  def reload(self):
+    if self.reload_future is None or self.reload_future.done():
+      self.reload_future = self._reload()
+
+    yield self.reload_future
+
+  @gen.coroutine
+  def get_status(self, process_name):
+    status_url = 'http://localhost:2812/_status?format=xml'
+    response = yield self.client.fetch(status_url)
+    raise gen.Return(process_status(response.body, process_name))
+
+  @gen.coroutine
+  def send_start(self, process_name):
+    process_url = 'http://localhost:2812/{}'.format(process_name)
+    payload = urllib.urlencode({'action': 'start'})
+    yield self.client.fetch(process_url, method='POST', body=payload)
+
+  @gen.coroutine
+  def wait_for_status(self, process_name):
+    while True:
+      try:
+        status = yield self.get_status(process_name)
+        raise gen.Return(status)
+      except ProcessNotFound:
+        logging.debug('{} not found in monit'.format(process_name))
+        yield gen.sleep(.5)
+
+  @gen.coroutine
+  def ensure_running(self, process_name):
+    while True:
+      status_future = self.wait_for_status(process_name)
+      status = yield gen.with_timeout(timedelta(seconds=2), status_future,
+                                      IOLoop.current())
+
+      if status == constants.MonitStates.RUNNING:
+        raise gen.Return()
+
+      if status == constants.MonitStates.UNMONITORED:
+        yield self.send_start(process_name)
+
+      yield gen.sleep(1)

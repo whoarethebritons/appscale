@@ -32,7 +32,8 @@ if __name__ == "__main__":
     appscale_info.get_zk_locations_string()
   zk_client = KazooClient(hosts=zk_locations)
   zk_client.start()
-  deployment_config = DeploymentConfig(zk_client)
+  deployment_config = DeploymentConfig()
+  deployment_config.init(zk_client)
   cassandra_config = deployment_config.get_config('cassandra')
   if 'num_tokens' not in cassandra_config:
     raise InvalidConfig('num_tokens not specified in deployment config.')

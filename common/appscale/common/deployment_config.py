@@ -33,7 +33,7 @@ class DeploymentConfig(object):
   # The ZooKeeper node where configuration is stored.
   CONFIG_ROOT = '/appscale/config'
 
-  def __init__(self, zk_client):
+  def __init__(self):
     """ Creates new DeploymentConfig object.
 
     Args:
@@ -43,6 +43,8 @@ class DeploymentConfig(object):
     self.update_lock = Lock()
     self.state = ConfigStates.LOADING
     self.config = {}
+
+  def init(self, zk_client):
     self.conn = zk_client
     self.conn.add_listener(self._conn_listener)
     self.conn.ensure_path(self.CONFIG_ROOT)

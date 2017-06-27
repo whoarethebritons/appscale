@@ -13,6 +13,15 @@ class HTTPCodes(object):
   INTERNAL_ERROR = 500
   NOT_IMPLEMENTED = 501
 
+
+class MonitStates(object):
+  PENDING = 'pending'  # Monit is trying to either start or stop the process.
+  RUNNING = 'running'
+  STOPPED = 'stopped'  # Monit will likely try to start the process soon.
+  UNMONITORED = 'unmonitored'
+  MISSING = 'missing'
+
+
 # AppScale home directory.
 APPSCALE_HOME = os.environ.get("APPSCALE_HOME", "/root/appscale")
 
@@ -129,3 +138,9 @@ SMALL_WAIT = 5
 
 # The number of seconds to wait before retrying some operations.
 TINY_WAIT = .1
+
+# The parent directory for source code extraction.
+UNPACK_ROOT = os.path.join('/', 'var', 'apps')
+
+# The ZooKeeper node that keeps track of where AppServers should run.
+INSTANCE_ASSIGNMENTS_NODE = '/appscale/instance_assignments'

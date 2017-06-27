@@ -896,7 +896,9 @@ module HelperFunctions
   def self.get_loaded_apps()
     apps =[]
     Dir["#{APPLICATIONS_DIR}/*"].each{ |app|
-      apps << File.basename(app)
+      revision_key = File.basename(app)
+      project_id = revision_key.split('_')[0]
+      apps << project_id
     }
     return apps
   end
