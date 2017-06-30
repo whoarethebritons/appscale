@@ -16,6 +16,10 @@ import com.google.appengine.tools.util.Parser.ParseResult;
 import java.awt.Toolkit;
 import java.io.File;
 import java.io.PrintStream;
+import java.lang.management.ManagementFactory;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
@@ -209,36 +213,36 @@ public class DevAppServerMain
         	}
         }, new DevAppServerOption(main, null, "admin_console_version", false)
         { // changed from admin_console_server
-                    public void apply()
-                    {
-                        this.main.admin_console_version = getValue();
-                        System.setProperty("ADMIN_CONSOLE_VERSION", this.main.admin_console_version);
-                    }
-                }, new DevAppServerOption(main, null, "APP_NAME", false)
-                {
-                    public void apply()
-                    {
-                        System.setProperty("APP_NAME", getValue());
-                    }
-                }, new DevAppServerOption(main, null, "NGINX_ADDRESS", false)
-                {
-                    public void apply()
-                    {
-                        System.setProperty("NGINX_ADDR", getValue());
-                    }
-                }, new DevAppServerOption(main, null, "NGINX_PORT", false)
-                {
-                    public void apply()
-                    {
-                        System.setProperty("NGINX_PORT", getNginxPort());
-                    }
-                }, new DevAppServerOption(main, null, "TQ_PROXY", false)
-                {
-                    public void apply()
-                    {
-                        System.setProperty("TQ_PROXY", getValue());
-                    }
-                } });
+            public void apply()
+            {
+                this.main.admin_console_version = getValue();
+                System.setProperty("ADMIN_CONSOLE_VERSION", this.main.admin_console_version);
+            }
+        }, new DevAppServerOption(main, null, "APP_NAME", false)
+        {
+            public void apply()
+            {
+                System.setProperty("APP_NAME", getValue());
+            }
+        }, new DevAppServerOption(main, null, "NGINX_ADDRESS", false)
+        {
+            public void apply()
+            {
+                System.setProperty("NGINX_ADDR", getValue());
+            }
+        }, new DevAppServerOption(main, null, "TQ_PROXY", false)
+        {
+            public void apply()
+            {
+                System.setProperty("TQ_PROXY", getValue());
+            }
+        }, new DevAppServerOption(main, null, "pidfile", false)
+        {
+            public void apply()
+            {
+                System.setProperty("PIDFILE", getValue());
+            }
+        }});
     }
 
     private static void processInstancePorts(List<String> optionValues) {
@@ -262,35 +266,6 @@ public class DevAppServerMain
 
     private static void reportBadInstancePortValue(String optionValue) {
         throw new IllegalArgumentException("Invalid instance_port value " + optionValue);
-    }
-
-    private static String getNginxPort()
-    {
-        String appName = System.getProperty("APP_NAME");
-        String portString = null;
-        BufferedReader bufferReader = null;
-        try
-        {
-            bufferReader = new BufferedReader(new FileReader(PORT_FILE_PREFIX + appName + ".txt"));
-            portString = bufferReader.readLine();
-        }
-        catch(IOException e)
-        {
-            System.out.println("IOException getting port from " + PORT_FILE_PREFIX + appName + ".txt");
-            e.printStackTrace(); 
-        }        
-        finally
-        {
-            try
-            {
-                if (bufferReader != null) bufferReader.close();
-            } 
-            catch (IOException ex)
-            {
-                ex.printStackTrace();
-            }
-        }
-        return portString; 
     }
 
     private static List<Option> buildOptions( DevAppServerMain main )
@@ -434,6 +409,13 @@ public class DevAppServerMain
                     updateCheck.maybePrintNagScreen(System.err);
                 }
                 updateCheck.checkJavaVersion(System.err);
+
+                String pidfile = System.getProperty("PIDFILE");
+                if (pidfile != null) {
+                    String pidString = ManagementFactory.getRuntimeMXBean().getName().split("@")[0];
+                    Path file = Paths.get(pidfile);
+                    Files.write(file, pidString.getBytes());
+                }
 
                 DevAppServer server = new DevAppServerFactory().createDevAppServer(appDir, externalResourceDir, DevAppServerMain.this.address, DevAppServerMain.this.port, noJavaAgent);
 

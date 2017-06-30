@@ -45,6 +45,8 @@ module HAProxy
   # HAProxy Configuration to use for a thread safe gae app.
   THREADED_SERVER_OPTIONS = "maxconn 7 check"
 
+  # Maximum AppServer threaded connections
+  MAX_APPSERVER_CONN = 7
 
   # The first port that haproxy will bind to for App Engine apps.
   START_PORT = 10000
@@ -89,12 +91,16 @@ module HAProxy
   HAPROXY_ERROR_PREFIX = "No such"
 
 
+  # The number of seconds HAProxy should wait for a server response.
+  HAPROXY_SERVER_TIMEOUT = 600
+
+
   def self.start()
-    start_cmd = "/usr/sbin/service haproxy start"
-    stop_cmd = "/usr/sbin/service haproxy stop"
-    match_cmd = "/usr/sbin/haproxy"
-    MonitInterface.start(:haproxy, start_cmd, stop_cmd, nil, nil, match_cmd,
-                         nil, nil, nil)
+    service = `which service`.chomp
+    start_cmd = "#{service} haproxy start"
+    stop_cmd = "#{service} haproxy stop"
+    pidfile = '/var/run/haproxy.pid'
+    MonitInterface.start_daemon(:haproxy, start_cmd, stop_cmd, pidfile)
   end
 
   def self.stop()
@@ -133,7 +139,7 @@ module HAProxy
   end
 
   # Create the config file for Datastore Server.
-  def self.create_datastore_server_config(server_ips, my_ip, listen_port)
+  def self.create_datastore_server_config(server_ips, listen_port)
     # For the Datastore servers we have a list of local ports the servers
     # are listening to, and we need to create the list of local IPs.
     servers = []
@@ -165,7 +171,8 @@ module HAProxy
   #   name        : the name of the server
   def self.create_app_config(servers, my_private_ip, listen_port, name)
     config = "# Create a load balancer for the #{name} application\n"
-    config << "listen #{name} #{my_private_ip}:#{listen_port}\n"
+    config << "listen #{name}\n"
+    config << "  bind #{my_private_ip}:#{listen_port}\n"
     servers.each do |server|
       config << HAProxy.server_config(name, "#{server['ip']}:#{server['port']}") + "\n"
     end
@@ -231,7 +238,7 @@ module HAProxy
     servers = []
     appservers.each { |location|
       # Ignore not-yet started appservers.
-      host, port = location.split(":")
+      _, port = location.split(":")
       next if Integer(port) < 0
       servers << HAProxy.server_config(full_app_name, location)
     }
@@ -241,7 +248,8 @@ module HAProxy
     end
 
     config = "# Create a load balancer for the app #{app_name} \n"
-    config << "listen #{full_app_name} #{private_ip}:#{listen_port} \n"
+    config << "listen #{full_app_name}\n"
+    config << "  bind #{private_ip}:#{listen_port}\n"
     config << servers.join("\n")
 
     config_path = File.join(SITES_ENABLED_PATH,
@@ -314,14 +322,6 @@ defaults
   # Log details about HTTP requests
   #option httplog
 
-  # Abort request if client closes its output channel while waiting for the
-  # request. HAProxy documentation has a long explanation for this option.
-  option abortonclose
-
-  # Check if a "Connection: close" header is already set in each direction,
-  # and will add one if missing.
-  option httpclose
-
   # If sending a request fails, try to send it to another, 3 times
   # before aborting the request
   retries 3
@@ -330,15 +330,14 @@ defaults
   # any Mongrel, not just the one that started the session
   option redispatch
 
-  # Timeout a request if the client did not read any data for 600 seconds
-  timeout client 600000
+  # Time to wait for a connection attempt to a server.
+  timeout connect 5000ms
 
-  # Timeout a request if Mongrel does not accept a connection for 600 seconds
-  timeout connect 600000
+  # The maximum inactivity time allowed for a client.
+  timeout client 50000ms
 
-  # Timeout a request if Mongrel does not accept the data on the connection,
-  # or does not send a response back in 10 minutes.
-  timeout server 600000
+  # The maximum inactivity time allowed for a server.
+  timeout server #{HAPROXY_SERVER_TIMEOUT}s
 
   # Enable the statistics page
   stats enable
@@ -378,6 +377,7 @@ CONFIG
     total_requests_seen = 0
     total_req_in_queue = 0
     time_requests_were_seen = 0
+    current_sessions = 0
 
     # Retrieve total and enqueued requests for the given app.
     monitoring_info = Djinn.log_run("echo \"show stat\" | " +
@@ -386,7 +386,7 @@ CONFIG
     if monitoring_info.empty?
       Djinn.log_warn("Didn't see any monitoring info - #{full_app_name} may not " +
         "be running.")
-      return :no_change, :no_change, :no_backend
+      return :no_change, :no_change, :no_change, :no_backend
     end
 
     monitoring_info.each_line { |line|
@@ -410,12 +410,15 @@ CONFIG
 
       if service_name == "BACKEND"
         total_req_in_queue = parsed_info[REQ_IN_QUEUE_INDEX].to_i
+        current_sessions = parsed_info[CURRENT_SESSIONS_INDEX].to_i
         Djinn.log_debug("#{full_app_name} #{service_name} Queued Currently " +
           "#{total_req_in_queue}")
+        Djinn.log_debug("Current sessions for #{full_app_name} " +
+          "is #{current_sessions}.")
       end
     }
 
-    return total_requests_seen, total_req_in_queue, time_requests_were_seen
+    return total_requests_seen, total_req_in_queue, current_sessions, time_requests_were_seen
   end
 
 
@@ -427,7 +430,7 @@ CONFIG
   # Returns:
   #   An Array of running AppServers (ip:port).
   #   An Array of failed (marked as DOWN) AppServers (ip:port).
-  def self.list_servers(app, down=false)
+  def self.list_servers(app)
     full_app_name = "gae_#{app}"
     running = []
     failed = []

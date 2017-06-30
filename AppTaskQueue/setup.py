@@ -11,8 +11,10 @@ setup(
   keywords='appscale google-app-engine python',
   platforms='Posix',
   install_requires=[
+    'appscale-common',
     'cassandra-driver',
-    'celery<4.0.0',
+    'celery>=3.1,<4.0.0',
+    'eventlet',
     'PyYaml',
     'tornado==4.2.0'
   ],
@@ -30,6 +32,5 @@ setup(
     'console_scripts': [
       'appscale-taskqueue=appscale.taskqueue.appscale_taskqueue:main'
     ]
-  },
-  package_data={'appscale.taskqueue': ['templates/*']}
+  }
 )

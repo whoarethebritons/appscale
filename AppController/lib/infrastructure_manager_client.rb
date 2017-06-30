@@ -74,7 +74,7 @@ class InfrastructureManagerClient
   # Check the comments in AppController/lib/app_controller_client.rb.
   def make_call(time, retry_on_except, callr)
     begin
-      Timeout::timeout(time) {
+      Timeout.timeout(time) {
         begin
           yield if block_given?
         rescue Errno::ECONNREFUSED, Errno::EHOSTUNREACH,
@@ -133,6 +133,7 @@ class InfrastructureManagerClient
       "azure_resource_group" => options['azure_resource_group'],
       "azure_group_tag" => options['azure_group_tag'],
       "azure_storage_account" => options['azure_storage_account'],
+      "autoscale_agent" => true
     }
   end
 
@@ -167,6 +168,8 @@ class InfrastructureManagerClient
     end
     parameters['instance_ids'] = instance_ids
     parameters['region'] = options['region']
+    parameters['IS_VERBOSE'] = options['verbose']
+    parameters['zone'] = options['zone']
 
     terminate_result = make_call(NO_TIMEOUT, RETRY_ON_FAIL,
       "terminate_instances") {
@@ -176,13 +179,25 @@ class InfrastructureManagerClient
   end
  
   
-  def spawn_vms(num_vms, options, job, disks)
+  # Create new VMs.
+  #
+  # Args:
+  #   num_vms: the number of VMs to create.
+  #   options: a hash containing information needed by the agent
+  #     (credentials etc ...).
+  #   jobs: an Array containing the roles for each VM to be created.
+  #   disks: an Array specifying the disks to be associated with the VMs
+  #     (if any, it can be nil).
+  #
+  # Returns
+  #   An Array containing the nodes information, suitable to be converted
+  #   into Node. 
+  def spawn_vms(num_vms, options, jobs, disks)
     parameters = get_parameters_from_credentials(options)
     parameters['num_vms'] = num_vms.to_s
     parameters['cloud'] = 'cloud1'
     parameters['zone'] = options['zone']
     parameters['region'] = options['region']
-    parameters['autoscale_agent'] = true
     parameters['IS_VERBOSE'] = options['verbose']
 
     run_result = run_instances(parameters)
@@ -204,15 +219,6 @@ class InfrastructureManagerClient
       Kernel.sleep(10)
     }
 
-    # now, turn this info back into the format we normally use
-    jobs = []
-    if job.is_a?(String)
-      # We only got one job, so just repeat it for each one of the nodes
-      jobs = Array.new(size=vm_info['public_ips'].length, obj=job)
-    else
-      jobs = job
-    end
-    
     # ip:job:instance-id
     instances_created = []
     vm_info['public_ips'].each_index { |index|

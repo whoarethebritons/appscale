@@ -201,10 +201,10 @@ module HelperFunctions
   def self.get_random_alphanumeric(length=10)
     random = ""
     possible = "0123456789abcdefghijklmnopqrstuvxwyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    possibleLength = possible.length
+    possible_length = possible.length
 
-    length.times { |index|
-      random << possible[Kernel.rand(possibleLength)]
+    length.times {
+      random << possible[Kernel.rand(possible_length)]
     }
 
     return random
@@ -282,7 +282,7 @@ module HelperFunctions
     refused_count = 0
 
     begin
-      Timeout::timeout(1) do
+      Timeout.timeout(1) do
         sock = TCPSocket.new(ip, port)
         if use_ssl
           ssl_context = OpenSSL::SSL::SSLContext.new()
@@ -430,7 +430,7 @@ module HelperFunctions
   end
 
   def self.get_secret(filename="/etc/appscale/secret.key")
-    return self.read_file(File.expand_path(filename), chomp=true)
+    return self.read_file(File.expand_path(filename))
   end
 
   # We use a hash of the secret to prevent showing the actual secret as a
@@ -583,13 +583,20 @@ module HelperFunctions
   # private IP address from its private FQDN is to use dig. This method
   # attempts to resolve IPs in that method, deferring to other methods if that
   # fails.
+  #
+  # Args:
+  #   host: the String containing the IP or hostname.
+  # Returns:
+  #   A String with the IP address.
+  # Raises:
+  #   AppScaleException: if host cannot be translated to IP.
   def self.convert_fqdn_to_ip(host)
     return host if host =~ /#{IP_REGEX}/
 
     ip = `dig #{host} +short`.chomp
     if ip.empty?
-      Djinn.log_debug("couldn't use dig to resolve [#{host}]")
-      self.log_and_crash("Couldn't convert #{host} to an IP address. Result of dig was \n#{ip}")
+      Djinn.log_warn("Couldn't use dig to resolve #{host}.")
+      raise AppScaleException.new("Couldn't convert #{host}: result of dig was \n#{ip}.")
     end
 
     return ip
@@ -621,10 +628,6 @@ module HelperFunctions
         actual_private << pri
       end
     }
-
-    #actual_public.each_index { |index|
-    #  actual_public[index] = HelperFunctions.convert_fqdn_to_ip(actual_public[index])
-    #}
 
     actual_private.each_index { |index|
       begin
@@ -740,17 +743,9 @@ module HelperFunctions
       Djinn.log_debug(describe_instances)
 
       # TODO: match on instance id
-      #if describe_instances =~ /terminated\s+#{keyname}\s+/
-      #  terminated_message = "An instance was unexpectedly terminated. " +
-      #    "Please contact your cloud administrator to determine why " +
-      #    "and try again. \n#{describe_instances}"
-      #  Djinn.log_debug(terminated_message)
-      #  self.log_and_crash(terminated_message)
-      #end
 
       # changed regexes so ensure we are only checking for instances created
       # for appscale only (don't worry about other instances created)
-
       all_ip_addrs = describe_instances.scan(/\s+(#{IP_OR_FQDN})\s+(#{IP_OR_FQDN})\s+running\s+#{keyname}\s+/).flatten
       public_ips, private_ips = HelperFunctions.get_ips(all_ip_addrs)
       public_ips = public_ips - public_up_already
@@ -801,7 +796,7 @@ module HelperFunctions
     return instances_created
   end
 
-  def self.generate_ssh_key(outputLocation, name, infrastructure)
+  def self.generate_ssh_key(output_location, name, infrastructure)
     ec2_output = ""
     loop {
       ec2_output = `#{infrastructure}-add-keypair #{name} 2>&1`
@@ -810,22 +805,13 @@ module HelperFunctions
       self.shell("#{infrastructure}-delete-keypair #{name} 2>&1")
     }
 
-    # output is the ssh private key prepended with info we don't need
-    # delimited by the first \n, so rip it off first to get just the key
-
-    #first_newline = ec2_output.index("\n")
-    #ssh_private_key = ec2_output[first_newline+1, ec2_output.length-1]
-
-    if outputLocation.class == String
-      outputLocation = [outputLocation]
-    end
-
-    outputLocation.each { |path|
-      fullPath = File.expand_path(path)
-      File.open(fullPath, "w") { |file|
+    output_location = [output_location] if output_location.class == String
+    output_location.each { |path|
+      full_path = File.expand_path(path)
+      File.open(full_path, "w") { |file|
         file.puts(ec2_output)
       }
-      FileUtils.chmod(0600, fullPath) # else ssh won't use the key
+      FileUtils.chmod(0600, full_path) # else ssh won't use the key
     }
 
     return
@@ -964,7 +950,7 @@ module HelperFunctions
     return filename[get_untar_dir(app_name).length..filename.length]
   end
 
-  def self.parse_static_data app_name
+  def self.parse_static_data(app_name, copy_files)
     untar_dir = get_untar_dir(app_name)
 
     begin
@@ -1008,6 +994,11 @@ module HelperFunctions
           Djinn.log_debug("Remapped path from / to temp_fix for application #{app_name}")
           handler["url"] = "/temp_fix"
         end
+
+        handler["expiration"] = expires_duration(handler["expiration"]) || default_expiration
+
+        next unless copy_files
+
         cache_static_dir_path = File.join(cache_path,handler["static_dir"])
         FileUtils.mkdir_p cache_static_dir_path
 
@@ -1017,8 +1008,6 @@ module HelperFunctions
         filenames.delete_if { |f| File.expand_path(f).match(skip_files_regex) }
 
         FileUtils.cp_r filenames, cache_static_dir_path
-
-        handler["expiration"] = expires_duration(handler["expiration"]) || default_expiration
       elsif handler["static_files"]
         # This is for bug https://bugs.launchpad.net/appscale/+bug/800539
         # this is a temp fix
@@ -1028,6 +1017,10 @@ module HelperFunctions
         end
         # Need to convert all \1 into $1 so that nginx understands it
         handler["static_files"] = handler["static_files"].gsub(/\\/,"$")
+
+        handler["expiration"] = expires_duration(handler["expiration"]) || default_expiration
+
+        next unless copy_files
 
         upload_regex = Regexp.new(handler["upload"])
 
@@ -1047,8 +1040,6 @@ module HelperFunctions
 
           FileUtils.cp_r filename, File.join(file_cache_path,File.basename(filename))
         end
-
-        handler["expiration"] = expires_duration(handler["expiration"]) || default_expiration
       end
       handler
     end
@@ -1130,7 +1121,7 @@ module HelperFunctions
 
     begin
       tree = YAML.load_file(File.join(untar_dir,"app.yaml"))
-    rescue Errno::ENOENT => e
+    rescue Errno::ENOENT
       Djinn.log_debug("No YAML for static data. Looking for an XML file.")
       return secure_handlers
     end
@@ -1160,7 +1151,7 @@ module HelperFunctions
     duration = nil
     input_string.split.each do |token|
       match = token.match(DELTA_REGEX)
-      next if not match
+      next unless match
       amount, units = match.captures
       next if amount.empty? || units.empty?
       duration = (duration || 0) + TIME_IN_SECONDS[units.downcase]*amount.to_i

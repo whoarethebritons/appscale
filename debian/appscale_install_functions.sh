@@ -15,12 +15,17 @@ if [ -z "${APPSCALE_PACKAGE_MIRROR-}" ]; then
     export APPSCALE_PACKAGE_MIRROR=http://s3.amazonaws.com/appscale-build
 fi
 
+JAVA_VERSION="java-8-openjdk"
+case "${DIST}" in
+    precise|trusty|wheezy) JAVA_VERSION="java-7-openjdk" ;;
+esac
+
 export UNAME_MACHINE=$(uname -m)
 if [ -z "${JAVA_HOME_DIRECTORY-}" ]; then
     if [ "$UNAME_MACHINE" = "x86_64" ]; then
-        export JAVA_HOME_DIRECTORY=/usr/lib/jvm/java-7-openjdk-amd64
+        export JAVA_HOME_DIRECTORY=/usr/lib/jvm/${JAVA_VERSION}-amd64
     elif [ "$UNAME_MACHINE" = "armv7l" ] || [ "$UNAME_MACHINE" = "armv6l" ]; then
-        export JAVA_HOME_DIRECTORY=/usr/lib/jvm/java-7-openjdk-armhf
+        export JAVA_HOME_DIRECTORY=/usr/lib/jvm/${JAVA_VERSION}-armhf
     fi
 fi
 
@@ -73,11 +78,11 @@ cachepackage() {
 # at next boot. AppScale manages those services.
 disableservice() {
     if [ -n "$1" ]; then
-      update-rc.d "${1}" disable || true
-      # The following to make sure we disable it for upstart.
-      if [ -d "/etc/init" ]; then
-          echo "manual" > /etc/init/"${1}".override
-      fi
+        update-rc.d "${1}" disable || true
+        # The following to make sure we disable it for upstart.
+        if [ -d "/etc/init" ]; then
+            echo "manual" > /etc/init/"${1}".override
+        fi
     else
         echo "Need a service name to disable!"
         exit 1
@@ -211,7 +216,8 @@ EOF
 
     # This puts in place the logrotate rules.
     if [ -d /etc/logrotate.d/ ]; then
-        cp ${APPSCALE_HOME}/lib/templates/appscale-logrotate.conf /etc/logrotate.d/appscale
+        cp ${APPSCALE_HOME}/common/appscale/common/templates/appscale-logrotate.conf \
+            /etc/logrotate.d/appscale
     fi
 
     # Logrotate AppScale logs hourly.
@@ -225,7 +231,7 @@ EOF
 
 installjavajdk()
 {
-    # This makes jdk-7 the default JVM.
+    # This sets the default JVM.
     update-alternatives --set java ${JAVA_HOME_DIRECTORY}/jre/bin/java
 }
 
@@ -288,8 +294,8 @@ installgems()
     sleep 1
     gem install json ${GEMOPT} -v 1.8.3
     sleep 1
-    gem install soap4r-ruby1.9 ${GEMOPT}
-    gem install httparty ${GEMOPT} -v 0.13.7
+    gem install soap4r-ng ${GEMOPT}
+    gem install httparty ${GEMOPT} -v 0.14.0
     gem install httpclient ${GEMOPT}
     # This is for the unit testing framework.
     gem install simplecov ${GEMOPT}
@@ -328,17 +334,19 @@ installsolr()
 
 installcassandra()
 {
-    CASSANDRA_VER=3.7
+    CASSANDRA_VER=3.11.0
 
     CASSANDRA_PACKAGE="apache-cassandra-${CASSANDRA_VER}-bin.tar.gz"
-    CASSANDRA_PACKAGE_MD5="39968c48cbb2a333e525f852db59fb48"
+    CASSANDRA_PACKAGE_MD5="96c72922df1170b4b5dec81b27d451fa"
     cachepackage ${CASSANDRA_PACKAGE} ${CASSANDRA_PACKAGE_MD5}
 
     # Remove old Cassandra environment directory.
     rm -rf ${APPSCALE_HOME}/AppDB/cassandra
 
     CASSANDRA_DIR="/opt/cassandra"
+    CASSANDRA_DATA_DIR="/opt/appscale/cassandra"
     mkdir -p ${CASSANDRA_DIR}
+    mkdir -p ${CASSANDRA_DATA_DIR}
     rm -rf ${CASSANDRA_DIR}/cassandra
     tar xzf "${PACKAGE_CACHE}/${CASSANDRA_PACKAGE}" -C ${CASSANDRA_DIR}
     mv -v ${CASSANDRA_DIR}/apache-cassandra-${CASSANDRA_VER} \
@@ -348,6 +356,7 @@ installcassandra()
         useradd cassandra
     fi
     chown -R cassandra ${CASSANDRA_DIR}
+    chown -R cassandra ${CASSANDRA_DATA_DIR}
 }
 
 postinstallcassandra()
@@ -359,7 +368,7 @@ postinstallcassandra()
 
 installservice()
 {
-    # This must be absolete path of runtime.
+    # This must be absolute path of runtime.
     mkdir -pv ${DESTDIR}/etc/init.d/
     cp ${APPSCALE_HOME_RUNTIME}/AppController/scripts/appcontroller ${DESTDIR}/etc/init.d/appscale-controller
     chmod -v a+x ${DESTDIR}/etc/init.d/appscale-controller
@@ -367,6 +376,12 @@ installservice()
     # Make sure the init script runs each time, so that it can start the
     # AppController on system reboots.
     update-rc.d -f appscale-controller defaults
+
+    # Prevent monit from immediately restarting services at boot.
+    cp ${APPSCALE_HOME}/AppController/scripts/appscale-unmonit.sh \
+      /etc/init.d/appscale-unmonit
+    chmod -v a+x /etc/init.d/appscale-unmonit
+    update-rc.d appscale-unmonit defaults 19 21
 }
 
 postinstallservice()
@@ -394,14 +409,11 @@ installzookeeper()
         dpkg -i /tmp/${ZK_REPO_PKG}
         apt-get update
         apt-get install -y zookeeper-server
-    else
-        apt-get install -y zookeeper zookeeperd zookeeper-bin
     fi
 
     # Trusty's kazoo version is too old, so use the version in Xenial.
     case "$DIST" in
         precise|trusty|wheezy) pipwrapper "kazoo==2.2.1" ;;
-        *) apt-get install python-kazoo ;;
     esac
 }
 
@@ -436,6 +448,12 @@ postinstallzookeeper()
 
 postinstallrabbitmq()
 {
+    # Allow guest users to connect from other machines.
+    if [ "${DIST}" = "xenial" ]; then
+        RMQ_CONFIG="[{rabbit, [{loopback_users, []}]}]."
+        echo ${RMQ_CONFIG} > /etc/rabbitmq/rabbitmq.config
+    fi
+
     # After install it starts up, shut it down.
     rabbitmqctl stop || true
     disableservice rabbitmq-server
@@ -512,6 +530,21 @@ EOF
     disableservice monit
 }
 
+postinstallejabberd()
+{
+    # Install ejabberd authentication script.
+    cp ${APPSCALE_HOME}/AppController/scripts/ejabberd_auth.py /etc/ejabberd
+    chown ejabberd:ejabberd /etc/ejabberd/ejabberd_auth.py
+    chmod +x /etc/ejabberd/ejabberd_auth.py
+
+    # Disable ejabberd's apparmor profile.
+    EJABBERD_PROFILE="/etc/apparmor.d/usr.sbin.ejabberdctl"
+    if apparmor_status 2> /dev/null | grep "ejabberdctl" > /dev/null; then
+        ln -s ${EJABBERD_PROFILE} /etc/apparmor.d/disable/
+        apparmor_parser -R ${EJABBERD_PROFILE}
+    fi
+}
+
 installpsutil()
 {
     case ${DIST} in
@@ -549,6 +582,14 @@ installpycapnp()
     pipwrapper pycapnp
 }
 
+installpyyaml()
+{
+    # The python-yaml package on Xenial uses over 30M of memory.
+    if [ "${DIST}" = "xenial" ]; then
+        pipwrapper PyYAML
+    fi
+}
+
 preplogserver()
 {
     LOGSERVER_DIR="/opt/appscale/logserver"
@@ -556,6 +597,24 @@ preplogserver()
     FILE_SRC="$APPSCALE_HOME_RUNTIME/LogService/logging.capnp"
     FILE_DEST="$APPSCALE_HOME_RUNTIME/AppServer/google/appengine/api/logservice/logging.capnp"
     cp ${FILE_SRC} ${FILE_DEST}
+}
+
+installcommon()
+{
+    pip install --upgrade --no-deps ${APPSCALE_HOME}/common
+    pip install ${APPSCALE_HOME}/common
+}
+
+installadminserver()
+{
+    pip install --upgrade --no-deps ${APPSCALE_HOME}/AdminServer
+    pip install ${APPSCALE_HOME}/AdminServer
+}
+
+installhermes()
+{
+    pip install --upgrade --no-deps ${APPSCALE_HOME}/Hermes
+    pip install ${APPSCALE_HOME}/Hermes
 }
 
 installtaskqueue()

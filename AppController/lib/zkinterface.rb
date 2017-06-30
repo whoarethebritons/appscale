@@ -20,6 +20,11 @@ class FailedZooKeeperOperationException < StandardError
 end
 
 
+# Indicates that the requested version node was not found.
+class VersionNotFound < StandardError
+end
+
+
 # The AppController employs the open source software ZooKeeper as a highly
 # available naming service, to store and retrieve information about the status
 # of applications hosted within AppScale. This class provides methods to
@@ -95,9 +100,6 @@ class ZKInterface
   # or below 10 seconds has historically not been a good idea for us (as
   # sessions repeatedly time out).
   TIMEOUT = 60
-
-
-  public
 
 
   # Initializes a new ZooKeeper connection to the IP address specified.
@@ -208,13 +210,13 @@ class ZKInterface
   # APPCONTROLLER_PATH. It returns a boolean that indicates whether or not
   # it was able to acquire the lock or not.
   def self.get_appcontroller_lock()
-    if !self.exists?(APPCONTROLLER_PATH)
+    unless self.exists?(APPCONTROLLER_PATH)
       self.set(APPCONTROLLER_PATH, DUMMY_DATA, NOT_EPHEMERAL)
     end
 
     info = self.run_zookeeper_operation {
-      @@zk.create(:path => APPCONTROLLER_LOCK_PATH, 
-        :ephemeral => EPHEMERAL, :data => JSON.dump(@@client_ip))
+      @@zk.create(:path => APPCONTROLLER_LOCK_PATH,  :ephemeral => EPHEMERAL,
+                  :data => @@client_ip)
     }
     if info[:rc].zero? 
       return true
@@ -240,7 +242,7 @@ class ZKInterface
   # they already have it).
   def self.lock_and_run(&block)
     # Create the ZK lock path if it doesn't exist.
-    if !self.exists?(APPCONTROLLER_PATH)
+    unless self.exists?(APPCONTROLLER_PATH)
       self.set(APPCONTROLLER_PATH, DUMMY_DATA, NOT_EPHEMERAL)
     end
 
@@ -328,9 +330,7 @@ class ZKInterface
   # Accesses the list of IP addresses stored in ZooKeeper and removes the
   # given IP address from that list.
   def self.remove_ip_from_ip_list(ip)
-    if !self.exists?(IP_LIST)
-      return
-    end
+    return unless self.exists?(IP_LIST)
 
     data = JSON.load(self.get(IP_LIST))
     data['ips'].delete(ip)
@@ -381,7 +381,7 @@ class ZKInterface
   # failed, and if so, what functionality it was providing at the time.
   def self.write_node_information(node, done_loading)
     # Create the folder for all nodes if it doesn't exist.
-    if !self.exists?(APPCONTROLLER_NODE_PATH)
+    unless self.exists?(APPCONTROLLER_NODE_PATH)
       self.run_zookeeper_operation {
         @@zk.create(:path => APPCONTROLLER_NODE_PATH, 
           :ephemeral => NOT_EPHEMERAL, :data => DUMMY_DATA)
@@ -421,18 +421,14 @@ class ZKInterface
   # Checks ZooKeeper to see if the given node has finished loading its roles,
   # which it indicates via a file in a particular path.
   def self.is_node_done_loading?(ip)
-    if !self.exists?(APPCONTROLLER_NODE_PATH)
-      return false
-    end
+    return false unless self.exists?(APPCONTROLLER_NODE_PATH)
 
     loading_file = "#{APPCONTROLLER_NODE_PATH}/#{ip}/done_loading"
-    if !self.exists?(loading_file)
-      return false
-    end
+    return false unless self.exists?(loading_file)
 
     begin
-      json_contents = self.get(loading_file)
-      return JSON.load(json_contents)
+      contents = self.get(loading_file)
+      return contents == "true"
     rescue FailedZooKeeperOperationException
       return false
     end
@@ -454,8 +450,9 @@ class ZKInterface
   # node is done loading (if they have finished starting/stopping roles), or is
   # not done loading (if they have roles they need to start or stop).
   def self.set_done_loading(ip, val)
-    return self.set("#{APPCONTROLLER_NODE_PATH}/#{ip}/done_loading", 
-      JSON.dump(val), NOT_EPHEMERAL)
+    zk_value = val ? "true" : "false"
+    return self.set("#{APPCONTROLLER_NODE_PATH}/#{ip}/done_loading",
+                    zk_value, NOT_EPHEMERAL)
   end
 
 
@@ -477,122 +474,31 @@ class ZKInterface
   end
 
 
-  # Adds the specified role to the given node in ZooKeeper. A node can call this
-  # function to add a role to another node, and the other node should take on
-  # this role, or a node can call this function to let others know that it is
-  # taking on a new role.
-  # Callers should acquire the ZK Lock before calling this function.
-  # roles should be an Array of Strings, where each String is a role to add
-  # node should be a DjinnJobData representing the node that we want to add
-  # the roles to
-  def self.add_roles_to_node(roles, node, keyname)
-    old_job_data = self.get_job_data_for_ip(node.private_ip)
-    new_node = DjinnJobData.new(old_job_data, keyname)
-    new_node.add_roles(roles.join(":"))
-    self.set_job_data_for_ip(node.private_ip, new_node.to_hash())
-    self.set_done_loading(node.private_ip, false)
-    self.update_ips_timestamp()
-  end
-
-
-  # Removes the specified roles from the given node in ZooKeeper. A node can 
-  # call this function to remove roles from another node, and the other node 
-  # should take on this role, or a node can call this function to let others 
-  # know that it is stopping existing roles.
-  # Callers should acquire the ZK Lock before calling this function.
-  # roles should be an Array of Strings, where each String is a role to remove
-  # node should be a DjinnJobData representing the node that we want to remove
-  # the roles from
-  def self.remove_roles_from_node(roles, node, keyname)
-    old_job_data = self.get_job_data_for_ip(node.private_ip)
-    new_node = DjinnJobData.new(old_job_data, keyname)
-    new_node.remove_roles(roles.join(":"))
-    self.set_job_data_for_ip(node.private_ip, new_node.to_hash())
-    self.set_done_loading(node.private_ip, false)
-    self.update_ips_timestamp()
-  end
-
-
-  # Asks ZooKeeper for all of the scaling requests (e.g., scale up or scale
-  # down) for the given application.
-  #
-  # Args:
-  #   appid: A String that names the application whose scaling requests we
-  #     wish to query.
-  # Returns:
-  #   An Array of Strings, where each String is a request to either add or
-  #   remove AppServers for this application. If no requests have been made
-  #   for this application, an empty Array is returned.
-  def self.get_scaling_requests_for_app(appid)
-    path = "#{SCALING_DECISION_PATH}/#{appid}"
-    requestors = self.get_children(path)
-    scaling_requests = []
-    requestors.each { |ip|
-      scaling_requests << self.get("#{path}/#{ip}")
+  def self.get_app_names()
+    projects = self.get_children('/appscale/projects')
+    active_projects = []
+    service_id = Djinn::DEFAULT_SERVICE
+    version_id = Djinn::DEFAULT_VERSION
+    projects.each { |project_id|
+      version_node = "/appscale/projects/#{project_id}" +
+        "/services/#{service_id}/versions/#{version_id}"
+      active_projects << project_id if self.exists?(version_node)
     }
-    return scaling_requests
+    return active_projects
   end
 
 
-  # Erases all requests to scale AppServers up or down for the named
-  # application.
-  #
-  # Args:
-  #   appid: A String that names the application whose scaling requests we
-  #     wish to erase.
-  def self.clear_scaling_requests_for_app(appid)
-    path = "#{SCALING_DECISION_PATH}/#{appid}"
-    requests = self.get_children(path)
-    requests.each { |request|
-      self.delete("#{path}/#{request}")
-    }
-  end
-
-
-  # Writes a node in ZooKeeper indicating that the named application needs
-  # additional AppServers running to serve the amount of traffic currently
-  # accessing the caller's machine.
-  #
-  # Args:
-  #   appid: A String that names the application that should be scaled up.
-  #   ip: A String that names the IP address of the machine that is requesting
-  #     more AppServers for this application.
-  # Returns:
-  #   true if the request was successfully made, and false otherwise.
-  def self.request_scale_up_for_app(appid, ip)
-    return self.request_scaling_for_app(appid, ip, :scale_up)
-  end
-
-
-  # Writes a node in ZooKeeper indicating that the named application needs
-  # less AppServers running to serve the amount of traffic currently
-  # accessing the caller's machine.
-  #
-  # Args:
-  #   appid: A String that names the application that should be scaled down.
-  #   ip: A String that names the IP address of the machine that is requesting
-  #     less AppServers for this application.
-  # Returns:
-  #   true if the request was successfully made, and false otherwise.
-  def self.request_scale_down_for_app(appid, ip)
-    return self.request_scaling_for_app(appid, ip, :scale_down)
-  end
-
-
-  def self.request_scaling_for_app(appid, ip, decision)
+  def self.get_version_details(project_id, service_id, version_id)
+    version_node = "/appscale/projects/#{project_id}/services/#{service_id}" +
+      "/versions/#{version_id}"
     begin
-      path = "#{SCALING_DECISION_PATH}/#{appid}/#{ip}"
-      self.set(SCALING_DECISION_PATH, DUMMY_DATA, NOT_EPHEMERAL)
-      self.set("#{SCALING_DECISION_PATH}/#{appid}", DUMMY_DATA, NOT_EPHEMERAL)
-      self.set(path, decision.to_s, NOT_EPHEMERAL)
-      return true
+      version_details_json = self.get(version_node)
     rescue FailedZooKeeperOperationException
-      return false
+      raise VersionNotFound,
+            "#{project_id}/#{service_id}/#{version_id} does not exist"
     end
+    return JSON.load(version_details_json)
   end
-
-
-  private
 
 
   def self.run_zookeeper_operation(&block)
@@ -698,7 +604,7 @@ class ZKInterface
         }
       end
 
-      if !info[:rc].zero?
+      unless info[:rc].zero?
         raise FailedZooKeeperOperationException.new("Failed to set path " +
           "#{key} with data #{val}, ephemeral = #{ephemeral}, saw " +
           "info #{info.inspect}")
@@ -747,7 +653,7 @@ class ZKInterface
     info = self.run_zookeeper_operation {
       @@zk.delete(:path => key)
     }
-    if !info[:rc].zero?
+    unless info[:rc].zero?
       Djinn.log_error("Delete failed - #{info.inspect}")
       raise FailedZooKeeperOperationException.new("Failed to delete " +
         " path #{key}, saw info #{info.inspect}")

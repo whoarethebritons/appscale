@@ -72,7 +72,7 @@ end
 namespace :hermes do
 
   task :test do
-    sh 'python -m unittest discover -b -v -s Hermes/test/unit'
+    sh 'python -m unittest discover -b -v -s Hermes/appscale/hermes'
   end
 
 end
@@ -97,10 +97,10 @@ namespace :appserver do
 end
 
 
-namespace :lib do
+namespace :common do
 
   task :test do
-    sh 'python -m unittest discover -b -v -s lib/test/unit'
+    sh 'python -m unittest discover -b -v -s common/test/unit'
   end
 
 end
@@ -138,18 +138,27 @@ namespace :xmppreceiver do
 
 end
 
+namespace :adminserver do
+
+  task :test do
+    sh 'python -m unittest discover -b -v -s AdminServer/tests'
+  end
+
+end
+
 python_tests = [
   'appdashboard:test',
   'appdb:test',
   'appmanager:test',
   'appserver:test',
   'apptaskqueue:test',
+  'common:test',
   'hermes:test',
   'infrastructuremanager:test',
-  'lib:test',
   'searchservice:test',
   'xmppreceiver:test',
-  'apps:test'
+  'apps:test',
+  'adminserver:test'
 ]
 ruby_tests = ['appcontroller:test']
 

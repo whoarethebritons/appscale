@@ -3,6 +3,7 @@
 
 # First-party Ruby libraries
 require 'resolv'
+require 'socket'
 require 'timeout'
 
 
@@ -19,6 +20,9 @@ require 'monit_interface'
 # methods that automatically configure and deploy rabbitmq and celery as needed.
 module TaskQueue
 
+  # Indicates an error when determining the version of rabbitmq.
+  class UnknownVersion < StandardError; end
+
   # The default name of the service.
   NAME = "TaskQueue"
 
@@ -29,8 +33,8 @@ module TaskQueue
   APPSCALE_HOME = ENV["APPSCALE_HOME"]
 
   # The port that the RabbitMQ server runs on, by default.
-  SERVER_PORT = 5672 
- 
+  SERVER_PORT = 5672
+
   # The starting port for TaskQueue server processes.
   STARTING_PORT = 17447
 
@@ -43,16 +47,16 @@ module TaskQueue
   # The path to the file that the shared secret should be written to.
   COOKIE_FILE = "/var/lib/rabbitmq/.erlang.cookie"
 
-  # The location of the taskqueue server script. This service controls 
+  # The location of the taskqueue server script. This service controls
   # and creates celery workers, and receives taskqueue protocol buffers
   # from AppServers.
   TASKQUEUE_SERVER_SCRIPT = `which appscale-taskqueue`.chomp
 
+  # Where to find the rabbitmqctl command.
+  RABBITMQCTL = `which rabbitmqctl`.chomp
+
   # The longest we'll wait for RabbitMQ to come up in seconds.
   MAX_WAIT_FOR_RABBITMQ = 30
-
-  # How many times to retry starting rabbitmq on a slave.
-  RABBIT_START_RETRY = 1000
 
   # Location where celery workers back up state to.
   CELERY_STATE_DIR = "/opt/appscale/celery"
@@ -66,6 +70,35 @@ module TaskQueue
   # If we fail to get the number of processors we set our default number of
   # taskqueue servers to this value.
   DEFAULT_NUM_SERVERS = 3
+
+
+  # Starts rabbitmq server.
+  def self.start_rabbitmq
+    if RABBITMQCTL.empty?
+       msg = "Couldn't find rabbitmqctl! Not starting rabbitmq server."
+       Djinn.log_error(msg)
+       raise AppScaleException.new(msg)
+    end
+
+    pidfile = File.join('/', 'var', 'lib', 'rabbitmq', 'mnesia',
+                        "rabbit@#{Socket.gethostname}.pid")
+    begin
+      installed_version = Gem::Version.new(self.get_rabbitmq_version)
+      new_location_version = Gem::Version.new('3.4')
+      if installed_version < new_location_version
+        pidfile = File.join('/', 'var', 'run', 'rabbitmq', 'pid')
+      end
+    rescue TaskQueue::UnknownVersion => error
+      Djinn.log_warn("Error while getting rabbitmq version: #{error.message}")
+    end
+
+    Djinn.log_run("mkdir -p #{CELERY_STATE_DIR}")
+    service_bin = `which service`.chomp
+    start_cmd = "#{service_bin} rabbitmq-server start"
+    stop_cmd = "#{service_bin} rabbitmq-server stop"
+    MonitInterface.start_daemon(:rabbitmq, start_cmd, stop_cmd, pidfile)
+  end
+
 
   # Starts a service that we refer to as a "taskqueue_master", a RabbitMQ
   # service that other nodes can rely on to be running the taskqueue server.
@@ -84,13 +117,15 @@ module TaskQueue
       Djinn.log_debug("Not erasing RabbitMQ state")
     end
 
-    # First, start up RabbitMQ.
-    Djinn.log_run("mkdir -p #{CELERY_STATE_DIR}")
-    start_cmd = "/usr/sbin/rabbitmq-server -detached -setcookie #{HelperFunctions.get_taskqueue_secret()}"
-    stop_cmd = "/usr/sbin/rabbitmqctl stop"
-    match_cmd = "sname rabbit"
-    MonitInterface.start(:rabbitmq, start_cmd, stop_cmd, nil, nil,
-                         match_cmd, nil, nil, nil)
+    # First, start up RabbitMQ and make sure the service is up.
+    start_rabbitmq
+    HelperFunctions.sleep_until_port_is_open("localhost",
+                                             SERVER_PORT)
+
+    # The master rabbitmq will set the policy for replication of messages
+    # and queues.
+    policy = '{"ha-mode":"all", "ha-sync-mode": "automatic"}'
+    Djinn.log_run("#{RABBITMQCTL} set_policy ha-all '' '#{policy}'")
 
     # Next, start up the TaskQueue Server.
     start_taskqueue_server(verbose)
@@ -102,7 +137,7 @@ module TaskQueue
   # Starts a service that we refer to as a "rabbitmq slave". Since all nodes in
   # RabbitMQ are equal, this name isn't exactly fair, so what this role means
   # here is "start a RabbitMQ server and connect it to the server on the machine
-  # playing the 'rabbitmq_master' role." We also start taskqueue servers on 
+  # playing the 'rabbitmq_master' role." We also start taskqueue servers on
   # all taskqueue nodes.
   #
   # Args:
@@ -121,13 +156,15 @@ module TaskQueue
       Djinn.log_debug("Not erasing RabbitMQ state")
     end
 
-    # Wait for RabbitMQ on master node to come up
+    # Wait for RabbitMQ on master node to come up, then start the local
+    # rabbitmq.
     Djinn.log_run("mkdir -p #{CELERY_STATE_DIR}")
     Djinn.log_debug("Waiting for RabbitMQ on master node to come up")
     HelperFunctions.sleep_until_port_is_open(master_ip, SERVER_PORT)
+    start_rabbitmq
 
-    # Start the server, reset it to join the head node. To do this we need
-    # the hostname of the master node. We go through few options:
+    # we now reset it to join the head node. To do this we need the
+    # hostname of the master node. We go through few options:
     # - the old one is to look into /etc/hosts for it
     # - another one is to just try to resolve it
     # - finally we give up and use the IP address
@@ -141,27 +178,16 @@ module TaskQueue
       end
     end
 
-    start_cmds = [
-      # Restarting the RabbitMQ server ensures that we read the correct cookie.
-      "service rabbitmq-server restart",
-      "/usr/sbin/rabbitmqctl stop_app",
-      # Read master hostname given the master IP.
-      "/usr/sbin/rabbitmqctl join_cluster rabbit@#{master_tq_host}",
-      "/usr/sbin/rabbitmqctl start_app"
-    ]
-    full_cmd = "#{start_cmds.join('; ')}"
-    stop_cmd = "/usr/sbin/rabbitmqctl stop"
-    match_cmd = "sname rabbit"
-
-    tries_left = RABBIT_START_RETRY
-    loop {
-      MonitInterface.start(:rabbitmq, full_cmd, stop_cmd, nil, nil,
-                           match_cmd, nil, nil, nil)
+    HelperFunctions::RETRIES.downto(0) { |tries_left|
       Djinn.log_debug("Waiting for RabbitMQ on local node to come up")
       begin
-        Timeout::timeout(MAX_WAIT_FOR_RABBITMQ) do
+        Timeout.timeout(MAX_WAIT_FOR_RABBITMQ) do
           HelperFunctions.sleep_until_port_is_open("localhost", SERVER_PORT)
           Djinn.log_debug("Done starting rabbitmq_slave on this node")
+
+          Djinn.log_run("#{RABBITMQCTL} stop_app")
+          Djinn.log_run("#{RABBITMQCTL} join_cluster rabbit@#{master_tq_host}")
+          Djinn.log_run("#{RABBITMQCTL} start_app")
 
           Djinn.log_debug("Starting TaskQueue servers on slave node")
           start_taskqueue_server(verbose)
@@ -192,13 +218,10 @@ module TaskQueue
     Djinn.log_debug("Starting taskqueue servers on this node")
     ports = self.get_server_ports()
 
-    start_cmd = "/usr/bin/python2 #{TASKQUEUE_SERVER_SCRIPT}"
+    start_cmd = TASKQUEUE_SERVER_SCRIPT
     start_cmd << ' --verbose' if verbose
-    stop_cmd = "/usr/bin/python2 #{APPSCALE_HOME}/scripts/stop_service.py " +
-               "#{TASKQUEUE_SERVER_SCRIPT}"
     env_vars = {:PATH => '$PATH:/usr/local/bin'}
-    MonitInterface.start(:taskqueue, start_cmd, stop_cmd, ports, env_vars,
-                         start_cmd, nil, nil, nil)
+    MonitInterface.start(:taskqueue, start_cmd, ports, env_vars)
     Djinn.log_debug("Done starting taskqueue servers on this node")
   end
 
@@ -221,7 +244,7 @@ module TaskQueue
 
   # Erlang processes use a secret value as a password to authenticate between
   # one another. Since this is pretty much the same thing we do in AppScale
-  # with our secret key, use the same key here but hashed as to not reveal the 
+  # with our secret key, use the same key here but hashed as to not reveal the
   # actual key.
   def self.write_cookie()
     HelperFunctions.write_file(COOKIE_FILE, HelperFunctions.get_taskqueue_secret())
@@ -253,10 +276,7 @@ module TaskQueue
 
     flower_cmd = `which flower`.chomp
     start_cmd = "#{flower_cmd} --basic_auth=appscale:#{flower_password}"
-    stop_cmd = "/usr/bin/python2 #{APPSCALE_HOME}/scripts/stop_service.py " +
-          "flower #{flower_password}"
-    MonitInterface.start(:flower, start_cmd, stop_cmd, nil,
-                         nil, start_cmd, nil, nil, nil)
+    MonitInterface.start(:flower, start_cmd)
   end
 
 
@@ -289,4 +309,17 @@ module TaskQueue
     return server_ports
   end
 
+  def self.get_rabbitmq_version()
+    version_re = /Version: (.*)-/
+
+    begin
+      rabbitmq_info = `dpkg -s rabbitmq-server`
+    rescue Errno::ENOENT
+      raise TaskQueue::UnknownVersion.new('The dpkg command was not found')
+    end
+
+    match = version_re.match(rabbitmq_info)
+    raise TaskQueue::UnknownVersion.new('Unable to find version') if match.nil?
+    return match[1]
+  end
 end

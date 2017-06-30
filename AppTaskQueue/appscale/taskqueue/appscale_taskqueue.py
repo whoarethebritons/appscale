@@ -2,6 +2,7 @@
 servers. """
 
 import argparse
+import json
 import logging
 import sys
 import time
@@ -11,12 +12,12 @@ import tornado.web
 
 import distributed_tq
 
+from appscale.common.unpackaged import APPSCALE_PYTHON_APPSERVER
 from appscale.datastore.cassandra_env.cassandra_interface import DatastoreProxy
 from .rest_api import RESTLease
 from .rest_api import RESTQueue
 from .rest_api import RESTTask
 from .rest_api import RESTTasks
-from .unpackaged import APPSCALE_PYTHON_APPSERVER
 from .utils import logger
 
 sys.path.append(APPSCALE_PYTHON_APPSERVER)
@@ -27,6 +28,8 @@ from google.appengine.ext.remote_api import remote_api_pb
 # Global for Distributed TaskQueue.
 task_queue = None
 
+# Global stats.
+STATS = {}
 
 class StopWorkerHandler(tornado.web.RequestHandler):
   """ Stops taskqueue workers for an app if they are running. """
@@ -107,8 +110,10 @@ class MainHandler(tornado.web.RequestHandler):
   def get(self):
     """ Handles get request for the web server. Returns that it is currently
     up in JSON. """
-    global task_queue    
-    self.write('{"status":"up"}')
+    global task_queue
+    tq_stats = {"status": "up",
+                "details": STATS}
+    self.write(json.dumps(tq_stats))
     self.finish()
 
   def remote_request(self, app_id, http_request_data):
@@ -202,8 +207,16 @@ class MainHandler(tornado.web.RequestHandler):
       response, errcode, errdetail = task_queue.update_storage_limit(
                                                  app_id,
                                                  http_request_data)
-
-    timing_log = 'Elapsed: {}'.format(round(time.time() - start_time, 3))
+    elapsed_time = round(time.time() - start_time, 3)
+    timing_log = 'Elapsed: {}'.format(elapsed_time)
+    if method in STATS:
+      if errcode in STATS[method]:
+        STATS[method][errcode] = elapsed_time
+      else:
+        STATS[method][errcode] = (1, elapsed_time)
+    else:
+      STATS[method] = {}
+      STATS[method][errcode] = (1, elapsed_time)
     if apirequest.has_request_id():
       timing_log += ' ({})'.format(apirequest.request_id())
     logger.debug(timing_log)

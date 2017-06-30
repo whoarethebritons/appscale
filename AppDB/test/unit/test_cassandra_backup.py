@@ -6,14 +6,12 @@ import subprocess
 import unittest
 from flexmock import flexmock
 
+from appscale.common import appscale_info
+from appscale.common.unpackaged import INFRASTRUCTURE_MANAGER_DIR
 from appscale.datastore.backup import backup_exceptions
 from appscale.datastore.backup import cassandra_backup
+from appscale.datastore.cassandra_env import rebalance
 from appscale.datastore.cassandra_env.cassandra_interface import NODE_TOOL
-from appscale.datastore.unpackaged import APPSCALE_LIB_DIR
-from appscale.datastore.unpackaged import INFRASTRUCTURE_MANAGER_DIR
-
-sys.path.append(APPSCALE_LIB_DIR)
-import appscale_info
 
 sys.path.append(INFRASTRUCTURE_MANAGER_DIR)
 from utils import utils
@@ -96,9 +94,13 @@ class TestCassandraBackup(unittest.TestCase):
     flexmock(utils).should_receive('ssh').with_args(re.compile('^192.*'),
       keyname, re.compile('^tar xf .*'))
     flexmock(utils).should_receive('ssh').with_args(re.compile('^192.*'),
+      keyname, re.compile('^monit start .*'), subprocess.call)
+    flexmock(utils).should_receive('ssh').with_args(re.compile('^192.*'),
       keyname, re.compile('^monit start .*'))
     flexmock(utils).should_receive('ssh').with_args(
       re.compile('^192.*'), keyname, re.compile('^chown -R cassandra /opt/.*'))
+    flexmock(rebalance).should_receive('get_status').and_return(
+      [{'state': 'UN'} for _ in db_ips])
 
     cassandra_backup.restore_data(path, keyname)
 

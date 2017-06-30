@@ -39,8 +39,7 @@ from google.appengine.tools.devappserver2 import shutdown
 from google.appengine.tools.devappserver2 import update_checker
 from google.appengine.tools.devappserver2 import wsgi_request_info
 
-sys.path.append("/root/appscale/lib")
-import appscale_info
+from appscale.common import appscale_info
 
 # Initialize logging early -- otherwise some library packages may
 # pre-empt our log formatting.  NOTE: the level is provisional; it may
@@ -458,6 +457,7 @@ def create_command_line_parser():
     const=True,
     default=False,
     help='if this application can read data stored by other applications.')
+  appscale_group.add_argument('--pidfile', help='create pidfile at location')
 
   return parser
 
@@ -509,14 +509,6 @@ def _setup_environ(app_id):
     app_id: The id of the application.
   """
   os.environ['APPLICATION_ID'] = app_id
-
-  # In AppScale, we need to know what port nginx binds to when sending traffic
-  # to this app. Since we need to know the appid to know what port we're on,
-  # this is a good place to set that value.
-  filename = "/etc/appscale/port-{0}.txt".format(app_id)
-  with open(filename) as file_handle:
-    port = file_handle.read()
-    os.environ['NGINX_PORT'] = port
 
 
 class DevelopmentServer(object):
@@ -717,6 +709,11 @@ def main():
   os.environ['MY_PORT'] = str(options.port)
   os.environ['COOKIE_SECRET'] = appscale_info.get_secret()
   os.environ['NGINX_HOST'] = options.nginx_host
+
+  if options.pidfile:
+    with open(options.pidfile, 'w') as pidfile:
+      pidfile.write(str(os.getpid()))
+
   dev_server = DevelopmentServer()
   try:
     dev_server.start(options)

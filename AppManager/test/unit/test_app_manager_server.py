@@ -11,18 +11,20 @@ import unittest
 import urllib2
 from xml.etree import ElementTree
 
+from appscale.common import (
+  file_io,
+  appscale_info,
+  misc,
+  monit_interface,
+  testing
+)
 from flexmock import flexmock
+
+from appscale.common import monit_app_configuration
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../"))
 import app_manager_server
-import monit_app_configuration
 
-sys.path.append(os.path.join(os.path.dirname(__file__), "../../../lib"))
-import file_io
-import appscale_info
-import misc
-import monit_interface
-import testing
 
 class TestAppManager(unittest.TestCase):
   def test_bad_convert_config_from_json(self):
@@ -242,8 +244,9 @@ class TestAppManager(unittest.TestCase):
       and_return('/path/to/dir/')
     app_id = 'testapp'
     max_heap = 260
+    pidfile = 'testpid'
     cmd = app_manager_server.create_java_start_cmd(
-      app_id, '20000', '127.0.0.2', max_heap)
+      app_id, '20000', '127.0.0.2', max_heap, pidfile)
     assert app_id in cmd
 
   def test_create_java_stop_cmd(self): 

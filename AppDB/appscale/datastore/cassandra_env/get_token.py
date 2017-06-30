@@ -1,7 +1,7 @@
 from __future__ import division
 import argparse
-import sys
 
+from appscale.common import appscale_info
 from cassandra.cluster import Cluster
 from random import choice
 from random import shuffle
@@ -14,10 +14,11 @@ from ..dbconstants import APP_ENTITY_TABLE
 from ..dbconstants import APP_ENTITY_SCHEMA
 from ..dbconstants import KEY_DELIMITER
 from ..dbconstants import KIND_SEPARATOR
-from ..unpackaged import APPSCALE_LIB_DIR
 
-sys.path.append(APPSCALE_LIB_DIR)
-import appscale_info
+
+class NoSampleKeys(Exception):
+  """ Indicates that nodetool did not provide any key samples. """
+  pass
 
 
 def is_entity(key):
@@ -131,6 +132,9 @@ def main():
   args = parser.parse_args()
 
   keys = get_sample()
+  if not keys:
+    raise NoSampleKeys('There are no key samples available on this machine.')
+
   kind_averages = get_kind_averages(keys)
 
   for key_dict in keys:
