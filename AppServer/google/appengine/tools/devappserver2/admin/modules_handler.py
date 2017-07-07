@@ -19,8 +19,8 @@
 from google.appengine.tools.devappserver2.admin import admin_request_handler
 
 
-class ServersHandler(admin_request_handler.AdminRequestHandler):
+class ModulesHandler(admin_request_handler.AdminRequestHandler):
 
   def get(self):
-    values = {'servers': self.dispatcher.servers}
-    self.response.write(self.render('servers.html', values))
+    values = {'modules': self.dispatcher.modules}
+    self.response.write(self.render('modules.html', values))
