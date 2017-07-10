@@ -765,7 +765,21 @@ class DistributedTaskQueue():
       A apiproxy_errors.ApplicationError of TASK_ALREADY_EXISTS.
     """
     task_name = request.task_name()
-    item = TaskName.get_by_key_name(task_name)
+
+    get_tries = 3
+    while True:
+      try:
+        item = TaskName.get_by_key_name(task_name)
+        break
+      except socket.error:
+        get_tries -= 1
+        if get_tries >= 0:
+          logger.warning('Error while checking task name. Retrying')
+          continue
+
+        raise apiproxy_errors.ApplicationError(
+          taskqueue_service_pb.TaskQueueServiceError.INTERNAL_ERROR)
+
     logger.debug("Task name {0}".format(task_name))
     if item:
       logger.warning("Task already exists")
@@ -777,10 +791,10 @@ class DistributedTaskQueue():
       logger.debug("Creating entity {0}".format(str(new_name)))
       try:
         db.put(new_name)
-      except datastore_errors.InternalError, internal_error:
+      except (datastore_errors.InternalError, socket.error) as internal_error:
         logger.error(str(internal_error))
         raise apiproxy_errors.ApplicationError(
-          taskqueue_service_pb.TaskQueueServiceError.DATASTORE_ERROR)
+          taskqueue_service_pb.TaskQueueServiceError.INTERNAL_ERROR)
 
   def __enqueue_push_task(self, request):
     """ Enqueues a batch of push tasks.
