@@ -869,12 +869,14 @@ class Task(object):
 
       return None
 
-    if target is DEFAULT_APP_VERSION:
-      return default_hostname
-    else:
 
-
-      return '%s.%s' % (target, default_hostname)
+    # AppScale: set target so that AppTaskQueue backend can handle it.
+    # if target is DEFAULT_APP_VERSION:
+    #   return default_hostname
+    # else:
+    # AppScale: do not send default_hostname, AppTaskQueue can get that and
+    # it makes it simpler to determine whether we have version.module as target.
+    return target
 
   @staticmethod
   def __determine_url(relative_url):

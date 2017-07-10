@@ -31,6 +31,7 @@ import taskqueue_service_pb
 from google.appengine.api import api_base_pb
 from google.appengine.api import apiproxy_stub
 from google.appengine.api import apiproxy_stub_map
+from google.appengine.api import modules
 from google.appengine.runtime import apiproxy_errors
 from google.appengine.ext.remote_api import remote_api_pb
 
@@ -219,16 +220,16 @@ class TaskQueueServiceStub(apiproxy_stub.APIProxyStub):
       self._AddTransactionalBulkTask(request, response)
       return response
 
-    port_file_location = os.path.join(
-      '/', 'etc', 'appscale', 'port-{}.txt'.format(self.__app_id))
-    with open(port_file_location) as port_file:
-      port = port_file.read().strip()
+    # port_file_location = os.path.join(
+    #   '/', 'etc', 'appscale', 'port-{}.txt'.format(self.__app_id))
+    # with open(port_file_location) as port_file:
+    #   port = port_file.read().strip()
 
     for add_request in request.add_request_list():
       add_request.set_app_id(self.__app_id)
-      url = add_request.url()
-      url = "http://" + self.__nginx_host + ":" + port + url
-      add_request.set_url(url)
+      # url = add_request.url()
+      # url = "http://" + self.__nginx_host + ":" + port + url
+      # add_request.set_url(url)
 
     self._RemoteSend(request, response, "BulkAdd", request_id)
     return response
