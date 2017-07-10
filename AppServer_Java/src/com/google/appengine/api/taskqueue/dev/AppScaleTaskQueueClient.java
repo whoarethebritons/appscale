@@ -67,7 +67,7 @@ public class AppScaleTaskQueueClient {
         addRequest.setAppId(getAppId());
         String taskPath = addRequest.getUrl();
         String appScaleTaskPath = "http://" + getNginxHost() + ":" + nginxPort + taskPath;
-        addRequest.setUrl(appScaleTaskPath);
+        addRequest.setUrl(taskPath);
         Request request = new Request();
         request.setMethod("Add");
         request.setServiceName(SERVICE_NAME);
@@ -159,6 +159,9 @@ public class AppScaleTaskQueueClient {
         post.addHeader(PROTOCOL_BUFFER_HEADER, PROTOCOL_BUFFER_VALUE);
         String tag = getAppId();
         post.addHeader(APPDATA_HEADER, tag);
+        post.addHeader("Host", getNginxHost());
+        post.addHeader("Module", System.getProperty("MODULE"));
+        post.addHeader("Version", System.getProperty("VERSION"));
         ByteArrayOutputStream bao = new ByteArrayOutputStream();
         try {
             bao.write(request.toByteArray());

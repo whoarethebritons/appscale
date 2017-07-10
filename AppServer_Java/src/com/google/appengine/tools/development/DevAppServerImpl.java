@@ -168,6 +168,8 @@ class DevAppServerImpl
 
     // add for AppScale
     Module mainModule = this.modules.getMainModule();
+    System.setProperty("MODULE", mainModule.getModuleName());
+    System.setProperty("VERSION", "default");
     AppEngineWebXml config = mainModule.getMainContainer().getAppEngineWebXmlConfig();
     if (config == null)
     {

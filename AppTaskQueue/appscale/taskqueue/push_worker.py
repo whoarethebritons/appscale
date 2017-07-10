@@ -86,10 +86,11 @@ def execute_task(task, headers, args):
   loggable_args = {key: args[key] for key in args
                    if key not in ['task_name', 'body', 'payload']}
   loggable_args['body_length'] = content_length
+  url = urlparse(args['url'])
+  headers['X-Forwarded-Proto'] = 'http'
   logger.info('Running {}\n'
               'Headers: {}\n'
               'Args: {}'.format(args['task_name'], headers, loggable_args))
-  url = urlparse(args['url'])
 
   redirects_left = 1
   while True:
@@ -122,8 +123,8 @@ def execute_task(task, headers, args):
 
     if url.scheme == 'http':
       connection = httplib.HTTPConnection(remote_host, url.port)
-    elif url.scheme == 'https':
-      connection = httplib.HTTPSConnection(remote_host, url.port)
+    # elif url.scheme == 'https':
+    #   connection = httplib.HTTPSConnection(remote_host, url.port)
     else:
       logger.error("Task %s tried to use url scheme %s, "
                    "which is not supported." % (

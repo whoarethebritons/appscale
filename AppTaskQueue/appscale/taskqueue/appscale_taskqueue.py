@@ -9,9 +9,11 @@ import time
 import tornado.httpserver
 import tornado.ioloop
 import tornado.web
+from kazoo.client import KazooClient
 
 import distributed_tq
-
+from appscale.common import appscale_info
+from appscale.common.constants import ZK_PERSISTENT_RECONNECTS
 from appscale.common.unpackaged import APPSCALE_PYTHON_APPSERVER
 from appscale.datastore.cassandra_env.cassandra_interface import DatastoreProxy
 from .rest_api import RESTLease
@@ -98,7 +100,8 @@ class MainHandler(tornado.web.RequestHandler):
     app_data = request.headers['appdata']
     app_data  = app_data.split(':')
     app_id = app_data[0]
- 
+    task_queue.set_module_version_source(request.headers['Version'],
+                                         request.headers['Module'])
     if pb_type == "Request":
       self.remote_request(app_id, http_request_data)
     else:
@@ -246,8 +249,13 @@ def main():
 
   global task_queue
 
+  zk_client = KazooClient(
+    hosts=','.join(appscale_info.get_zk_node_ips()),
+    connection_retry=ZK_PERSISTENT_RECONNECTS)
+  zk_client.start()
+
   db_access = DatastoreProxy()
-  task_queue = distributed_tq.DistributedTaskQueue(db_access)
+  task_queue = distributed_tq.DistributedTaskQueue(db_access, zk_client)
   handlers = [
     # Takes JSON requests from AppController.
     (r"/startworker", StartWorkerHandler),

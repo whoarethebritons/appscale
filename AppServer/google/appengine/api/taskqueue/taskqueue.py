@@ -802,8 +802,10 @@ class Task(object):
     elif self.__target is not None:
       host = self.__host_from_target(self.__target)
       if host:
-
-
+        logging.info("CURRENT_VERSION_ID: {}".format(os.environ[
+                                                       'CURRENT_VERSION_ID']))
+        self.__headers['Version'] = os.environ['CURRENT_VERSION_ID'].split('.')[0]
+        self.__headers['Module'] = os.environ['CURRENT_VERSION_ID'].split('.')[1]
         self.__headers['Host'] = host
     elif 'Host' in self.__headers:
       self.__target = self.__target_from_host(self.__headers['Host'])
@@ -864,16 +866,15 @@ class Task(object):
     """
     default_hostname = app_identity.get_default_version_hostname()
     if default_hostname is None:
-
-
-
       return None
-
-
     # AppScale: set target so that AppTaskQueue backend can handle it.
-    # if target is DEFAULT_APP_VERSION:
-    #   return default_hostname
-    # else:
+    target_info = target.split('.')
+    if len(target_info) > 2:
+      taskqueue_service_pb.TaskQueueServiceError.INVALID_REQUEST(
+        'AppScale does not support instance parameter for target, i.e. '
+        'instance.version.module')
+
+
     # AppScale: do not send default_hostname, AppTaskQueue can get that and
     # it makes it simpler to determine whether we have version.module as target.
     return target

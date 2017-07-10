@@ -45,10 +45,12 @@ from .utils import (
   logger
 )
 
+from .service_manager import GlobalServiceManager
 sys.path.append(APPSCALE_PYTHON_APPSERVER)
 from google.appengine.api import apiproxy_stub_map
 from google.appengine.api import datastore_errors
 from google.appengine.api import datastore_distributed
+from google.appengine.api import modules
 from google.appengine.api.taskqueue import taskqueue_service_pb
 from google.appengine.ext import db
 from google.appengine.runtime import apiproxy_errors
@@ -251,7 +253,7 @@ class DistributedTaskQueue():
   # The safe memory per Celery worker.
   CELERY_SAFE_MEMORY = 200
 
-  def __init__(self, db_access):
+  def __init__(self, db_access, zk_client):
     """ DistributedTaskQueue Constructor.
 
     Args:
@@ -274,9 +276,8 @@ class DistributedTaskQueue():
     os.environ['APPLICATION_ID'] = constants.DASHBOARD_APP_ID
 
     self.db_access = db_access
-
-    # Flag to see if code needs to be reloaded.
     self.__force_reload = False
+    self.service_manager = GlobalServiceManager(zk_client, db_access)
 
   def get_queue(self, app, queue):
     """ Fetches a Queue object.
@@ -341,7 +342,7 @@ class DistributedTaskQueue():
     try:
       if monit_interface.stop(watch):
         stop_command = self.get_worker_stop_command(app_id)
-        os.system(stop_command) 
+        os.system(stop_command)
         TaskQueueConfig.remove_config_files(app_id)
         result = {'error': False}
       else:
@@ -350,7 +351,7 @@ class DistributedTaskQueue():
       result = {'error': True, 'reason' : str(os_error)}
 
     return json.dumps(result)
-    
+
   def get_worker_stop_command(self, app_id):
     """ Returns the command to run to stop celery workers for a given
     application.
@@ -374,7 +375,7 @@ class DistributedTaskQueue():
     Returns:
       A JSON string with the error status and error reason.
     """
-    request = self.__parse_json_and_validate_tags(json_request,  
+    request = self.__parse_json_and_validate_tags(json_request,
                                          self.SETUP_WORKERS_TAGS)
     logger.info("Reload worker request: {0}".format(request))
     if 'error' in request:
@@ -441,7 +442,7 @@ class DistributedTaskQueue():
     Returns:
       A JSON string with the error status and error reason.
     """
-    request = self.__parse_json_and_validate_tags(json_request,  
+    request = self.__parse_json_and_validate_tags(json_request,
                                          self.SETUP_WORKERS_TAGS)
     logger.info("Start worker request: {0}".format(request))
     if 'error' in request:
@@ -459,7 +460,7 @@ class DistributedTaskQueue():
     except Exception as config_error:
       logger.exception('Unknown exception')
       return json.dumps({'error': True, 'reason': config_error.message})
-   
+
     log_file = os.path.join(self.LOG_DIR, '{}.log'.format(app_id))
     pidfile = os.path.join('/', 'var', 'run', 'appscale',
                            'celery-{}.pid'.format(app_id))
@@ -498,7 +499,7 @@ class DistributedTaskQueue():
     if monit_interface.start(watch):
       json_response = {'error': False}
     else:
-      json_response = {'error': True, 
+      json_response = {'error': True,
                        'reason': "Start of monit watch for %s failed" % watch}
     return json.dumps(json_response)
 
@@ -788,8 +789,8 @@ class DistributedTaskQueue():
     """
     self.__validate_push_task(request)
     self.__check_and_store_task_names(request)
-    args = self.get_task_args(request)
     headers = self.get_task_headers(request)
+    args = self.get_task_args(request, headers)
     countdown = int(headers['X-AppEngine-TaskETA']) - \
                 int(datetime.datetime.now().strftime("%s"))
 
@@ -807,17 +808,17 @@ class DistributedTaskQueue():
       routing_key=celery_queue,
     )
 
-  def get_task_args(self, request):
+  def get_task_args(self, request, headers):
     """ Gets the task args used when making a task web request.
   
     Args:
       request: A taskqueue_service_pb.TaskQueueAddRequest.
+      headers: The request headers, used to determine target.
     Returns:
       A dictionary used by a task worker.
     """
     args = {}
     args['task_name'] = request.task_name()
-    args['url'] = request.url()
     args['app_id'] = request.app_id()
     args['queue_name'] = request.queue_name()
     args['method'] = self.__method_mapping(request.method())
@@ -836,6 +837,14 @@ class DistributedTaskQueue():
     # Load queue info into cache.
     app_id = self.__cleanse(request.app_id())
     queue_name = request.queue_name()
+
+    # Get url for specified target.
+    try:
+      target_url = self.get_target_from_host(app_id, headers)
+      args['url'] = "{0}/{url}".format(target_url, url=request.url())
+    except KeyError:
+      target_url = None
+
     if app_id not in self.__queue_info_cache:
       try:
         self.__queue_info_cache[app_id] = TaskQueueConfig(
@@ -845,7 +854,7 @@ class DistributedTaskQueue():
           .format(app_id))
       except Exception:
         logger.exception('Unknown exception')
-  
+
     # Use queue defaults.
     if (app_id in self.__queue_info_cache and
         queue_name in self.__queue_info_cache[app_id]):
@@ -857,6 +866,10 @@ class DistributedTaskQueue():
       args['min_backoff_sec'] = queue.min_backoff_seconds
       args['max_backoff_sec'] = queue.max_backoff_seconds
       args['max_doublings'] = queue.max_doublings
+
+      if not target_url:
+        target_url = self.get_target_from_queue(app_id, queue.target, headers)
+        args['url'] = "{0}{url}".format(target_url, url=request.url())
 
     # Override defaults.
     if request.has_retry_parameters():
@@ -873,6 +886,59 @@ class DistributedTaskQueue():
         args['max_doublings'] = request.\
                                   retry_parameters().max_doublings()
     return args
+
+  def get_target_from_queue(self, app_id, target, headers):
+    target_instance = appscale_info.get_login_ip()
+    if not target:
+      target_version = self.__version
+      target_module = self.__module
+      port = self.service_manager[app_id][target_module][target_version]
+      return "http://{0}:{1}/".format(target_instance, port)
+
+    target_info = target.split('.')
+
+    target_length = len(target_info)
+    if target_length > 2:
+      raise Exception("Cannot use instance")
+    try:
+      target_module = target_info.pop(-1)
+    except IndexError:
+      target_module = self.__module
+    try:
+      target_version = target_info.pop(-1)
+    except IndexError:
+      target_version = self.__version
+    logger.info("app: {3} instance: {0} version: {1} module: {2}".format(
+      app_id, target_instance, target_version, target_module))
+    port = self.service_manager[app_id][target_module][target_version]
+    return "http://{0}:{1}".format(target_instance, port)
+
+  def get_target_from_host(self, app_id, headers):
+    target_info = headers['Host'].split('.')
+
+    target_instance = appscale_info.get_login_ip()
+    try:
+      target_module = target_info.pop(-1)
+    except IndexError:
+      target_module = self.__module
+    try:
+      target_version = target_info.pop(-1)
+    except IndexError:
+      target_version = self.__version
+    logger.info("app: {3} instance: {0} version: {1} module: {2}".format(
+      app_id, target_instance, target_version, target_module))
+    try:
+      logger.info(self.service_manager)
+      port = self.service_manager[app_id][target_module][target_version]
+    except KeyError:
+      err_msg = "target '{0}.{1}' does not exist".format(target_version,
+                                                         target_module)
+      raise taskqueue_service_pb.TaskQueueServiceError.INVALID_REQUEST(err_msg)
+    return "http://{0}:{1}".format(target_instance, port)
+
+  def set_module_version_source(self, version, module):
+    self.__version = version
+    self.__module = module
 
   def get_task_headers(self, request):
     """ Gets the task headers used for a task web request. 
