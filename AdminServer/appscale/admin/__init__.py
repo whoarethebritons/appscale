@@ -140,6 +140,49 @@ def wait_for_delete(operation_id, http_port):
   operation.finish()
 
 
+class AppsHandler(BaseHandler):
+  """ Manages applications. """
+  def initialize(self, zk_client):
+    """ Defines required resources to handle requests.
+
+    Args:
+      zk_client: An KazooClient.
+    """
+    self.zk_client = zk_client
+
+  def get(self):
+    """ Retrieves projects.
+
+    Returns:
+      A list specifying the projects.
+    """
+    url = '/appscale/projects'
+    self.finish(json_encode(self.zk_client.get_children(url)))
+
+
+class ServicesHandler(BaseHandler):
+  """ Manages application services. """
+  def initialize(self, zk_client):
+    """ Defines required resources to handle requests.
+
+    Args:
+      zk_client: A KazooClient.
+    """
+    self.zk_client = zk_client
+
+  def get(self, project_id):
+    """ Retrieves project services.
+
+    Args:
+      project_id: A string specifying a project ID.
+    Returns:
+      A list specifying the project's services.
+    """
+    url = ('/appscale/projects/{project_id}/services'
+           .format(project_id=project_id))
+    self.finish(json_encode(self.zk_client.get_children(url)))
+
+
 class VersionsHandler(BaseHandler):
   """ Manages service versions. """
   def initialize(self, acc, ua_client, zk_client, version_update_lock,
@@ -158,6 +201,39 @@ class VersionsHandler(BaseHandler):
     self.zk_client = zk_client
     self.version_update_lock = version_update_lock
     self.thread_pool = thread_pool
+
+  @gen.coroutine
+  def get(self, project_id, service_id):
+    """ Retrieves service versions.
+
+    Args:
+      project_id: A string specifying a project ID.
+      service_id: A string specifying a service ID.
+    Returns:
+      A dist in which each key is the service's version and
+      value is a dict of ports on which this version is deployed.
+    """
+    url = ('/appscale/projects/{project_id}/services/{service_id}/versions'
+           .format(project_id=project_id, service_id=service_id))
+    versions = self.zk_client.get_children(url)
+
+    versions_info = {}
+    for version in versions:
+      versions_info[version] = ports_info = {}
+      try:
+        version_url = '{versions_url}/{version}'.format(
+          versions_url=url, version=version)
+        ports = json.loads(self.zk_client.get(version_url)[0])
+      except NoNodeError:
+        message = 'Information has not obtained for version: {}'.format(version)
+        logging.warn(message)
+        continue
+
+      extensions = ports['appscaleExtensions']
+      ports_info['http_port'] = extensions['httpPort']
+      ports_info['https_port'] = extensions['httpsPort']
+
+    self.finish(json_encode(versions_info))
 
   def get_current_user(self):
     """ Retrieves the current user.
@@ -715,6 +791,9 @@ def main():
     GlobalPushWorkerManager(zk_client, monit_operator)
 
   app = web.Application([
+    ('/v1/apps', AppsHandler, {'zk_client': zk_client}),
+    ('/v1/apps/([a-z0-9-]+)/services', ServicesHandler,
+     {'zk_client': zk_client}),
     ('/v1/apps/([a-z0-9-]+)/services/([a-z0-9-]+)/versions', VersionsHandler,
      all_resources),
     ('/v1/apps/([a-z0-9-]+)/services/([a-z0-9-]+)/versions/([a-z0-9-]+)',
