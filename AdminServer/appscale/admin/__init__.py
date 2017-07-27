@@ -156,8 +156,17 @@ class AppsHandler(BaseHandler):
     Returns:
       A list specifying the projects.
     """
+    self.authenticate()
+
     url = '/appscale/projects'
-    self.finish(json_encode(self.zk_client.get_children(url)))
+    try:
+      apps = self.zk_client.get_children(url)
+    except NoNodeError:
+      message = 'Applications not found'
+      logging.warn('{}. URL: {}'.format(message, url))
+      raise CustomHTTPError(HTTPCodes.NOT_FOUND, message=message)
+
+    self.finish(json_encode(apps))
 
 
 class ServicesHandler(BaseHandler):
@@ -178,9 +187,18 @@ class ServicesHandler(BaseHandler):
     Returns:
       A list specifying the project's services.
     """
+    self.authenticate()
+
     url = ('/appscale/projects/{project_id}/services'
            .format(project_id=project_id))
-    self.finish(json_encode(self.zk_client.get_children(url)))
+    try:
+      services = self.zk_client.get_children(url)
+    except NoNodeError:
+      message = 'Services not found'
+      logging.warn('{}. URL: {}'.format(message, url))
+      raise CustomHTTPError(HTTPCodes.NOT_FOUND, message=message)
+
+    self.finish(json_encode(services))
 
 
 class VersionsHandler(BaseHandler):
@@ -213,9 +231,16 @@ class VersionsHandler(BaseHandler):
       A dist in which each key is the service's version and
       value is a dict of ports on which this version is deployed.
     """
+    self.authenticate()
+
     url = ('/appscale/projects/{project_id}/services/{service_id}/versions'
            .format(project_id=project_id, service_id=service_id))
-    versions = self.zk_client.get_children(url)
+    try:
+      versions = self.zk_client.get_children(url)
+    except NoNodeError:
+      message = 'Versions not found'
+      logging.warn('{}. URL: {}'.format(message, url))
+      raise CustomHTTPError(HTTPCodes.NOT_FOUND, message=message)
 
     versions_info = {}
     for version in versions:
