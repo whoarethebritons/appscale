@@ -180,6 +180,42 @@ class AppsHandler(BaseHandler):
     self.write(json_encode(apps_info))
 
 
+class AppHandler(BaseHandler):
+  """ Manages application. """
+
+  def initialize(self, zk_client):
+    """ Defines required resources to handle requests.
+
+    Args:
+      zk_client: An KazooClient.
+    """
+    self.zk_client = zk_client
+
+  def get(self, project_id):
+    """ Retrieves project.
+
+    Returns:
+      A dict specifying app information with full path to the project
+      and project ID.
+    """
+    self.authenticate()
+
+    app_node = '/appscale/projects/{app}'.format(app=project_id)
+    app_info = {}
+
+    if self.zk_client.exists(app_node):
+      app_info = {
+        'name': app_node,
+        'id': project_id
+      }
+    else:
+      message = 'Application not found'
+      logging.warn('{}. Node: {}'.format(message, apps_node))
+      raise CustomHTTPError(HTTPCodes.NOT_FOUND, message=message)
+
+    self.write(json_encode(app_info))
+
+
 class ServicesHandler(BaseHandler):
   """ Manages application services. """
   def initialize(self, zk_client):
@@ -847,6 +883,7 @@ def main():
 
   app = web.Application([
     ('/v1/apps', AppsHandler, {'zk_client': zk_client}),
+    ('/v1/apps/([a-z0-9-]+)', AppHandler, {'zk_client': zk_client}),
     ('/v1/apps/([a-z0-9-]+)/services', ServicesHandler,
      {'zk_client': zk_client}),
     ('/v1/apps/([a-z0-9-]+)/services/([a-z0-9-]+)/versions', VersionsHandler,
