@@ -154,19 +154,30 @@ class AppsHandler(BaseHandler):
     """ Retrieves projects.
 
     Returns:
-      A list specifying the projects.
+      A dict specifying apps information with full path to the project
+      and project ID.
     """
     self.authenticate()
 
-    url = '/appscale/projects'
+    apps_node = '/appscale/projects'
+    apps_info = {
+      'apps': []
+    }
+
     try:
-      apps = self.zk_client.get_children(url)
+      apps = self.zk_client.get_children(apps_node)
+
+      for app in apps:
+        apps_info['apps'].append({
+          'name': '{apps_node}/{app}'.format(apps_node=apps_node, app=app),
+          'id': app
+        })
     except NoNodeError:
       message = 'Applications not found'
-      logging.warn('{}. URL: {}'.format(message, url))
+      logging.warn('{}. Node: {}'.format(message, apps_node))
       raise CustomHTTPError(HTTPCodes.NOT_FOUND, message=message)
 
-    self.finish(json_encode(apps))
+    self.write(json_encode(apps_info))
 
 
 class ServicesHandler(BaseHandler):
@@ -185,20 +196,33 @@ class ServicesHandler(BaseHandler):
     Args:
       project_id: A string specifying a project ID.
     Returns:
-      A list specifying the project's services.
+      A dict specifying service information with full path to the service
+      and service ID.
     """
     self.authenticate()
 
-    url = ('/appscale/projects/{project_id}/services'
+    services_node = ('/appscale/projects/{project_id}/services'
            .format(project_id=project_id))
+
+    services_info = {
+      'services': []
+    }
+
     try:
-      services = self.zk_client.get_children(url)
+      services = self.zk_client.get_children(services_node)
+
+      for service in services:
+        services_info['services'].append({
+          'name': '{services_node}/{service}'.format(
+            services_node=services_node, service=service),
+          'id': service
+        })
     except NoNodeError:
       message = 'Services not found'
-      logging.warn('{}. URL: {}'.format(message, url))
+      logging.warn('{}. Node: {}'.format(message, services_node))
       raise CustomHTTPError(HTTPCodes.NOT_FOUND, message=message)
 
-    self.finish(json_encode(services))
+    self.write(json_encode(services_info))
 
 
 class VersionsHandler(BaseHandler):
@@ -220,7 +244,6 @@ class VersionsHandler(BaseHandler):
     self.version_update_lock = version_update_lock
     self.thread_pool = thread_pool
 
-  @gen.coroutine
   def get(self, project_id, service_id):
     """ Retrieves service versions.
 
@@ -228,37 +251,44 @@ class VersionsHandler(BaseHandler):
       project_id: A string specifying a project ID.
       service_id: A string specifying a service ID.
     Returns:
-      A dist in which each key is the service's version and
-      value is a dict of ports on which this version is deployed.
+      A dict specifying version information with full path to the version,
+      and version ID, runtime, threadsafe, http and https ports.
     """
     self.authenticate()
 
-    url = ('/appscale/projects/{project_id}/services/{service_id}/versions'
-           .format(project_id=project_id, service_id=service_id))
+    versions_node = (
+      '/appscale/projects/{project_id}/services/{service_id}/versions'
+        .format(project_id=project_id, service_id=service_id))
+
+    version_node = None
+
+    versions_info = {
+      'versions': []
+    }
+
     try:
-      versions = self.zk_client.get_children(url)
+      versions = self.zk_client.get_children(versions_node)
+
+      for version in versions:
+        version_node = '{versions_node}/{version}'.format(
+          versions_node=versions_node, version=version)
+        version_info = json_decode(self.zk_client.get(version_node)[0])
+
+        versions_info['versions'].append({
+          'name': version_node,
+          'id': version,
+          'runtime': version_info['runtime'],
+          'threadsafe': version_info['threadsafe'],
+          'http_port': version_info['appscaleExtensions']['httpPort'],
+          'https_port': version_info['appscaleExtensions']['httpsPort']
+        })
     except NoNodeError:
-      message = 'Versions not found'
-      logging.warn('{}. URL: {}'.format(message, url))
+      message = 'Version(s) not found'
+      logging.warn('{}. Node: {}'.format(
+        message, version_node if version_info else versions_node))
       raise CustomHTTPError(HTTPCodes.NOT_FOUND, message=message)
 
-    versions_info = {}
-    for version in versions:
-      versions_info[version] = ports_info = {}
-      try:
-        version_url = '{versions_url}/{version}'.format(
-          versions_url=url, version=version)
-        ports = json.loads(self.zk_client.get(version_url)[0])
-      except NoNodeError:
-        message = 'Information has not obtained for version: {}'.format(version)
-        logging.warn(message)
-        continue
-
-      extensions = ports['appscaleExtensions']
-      ports_info['http_port'] = extensions['httpPort']
-      ports_info['https_port'] = extensions['httpsPort']
-
-    self.finish(json_encode(versions_info))
+    self.write(json_encode(versions_info))
 
   def get_current_user(self):
     """ Retrieves the current user.
