@@ -210,7 +210,7 @@ class AppHandler(BaseHandler):
       }
     else:
       message = 'Application not found'
-      logging.warn('{}. Node: {}'.format(message, apps_node))
+      logging.warn('{}. Node: {}'.format(message, app_node))
       raise CustomHTTPError(HTTPCodes.NOT_FOUND, message=message)
 
     self.write(json_encode(app_info))
