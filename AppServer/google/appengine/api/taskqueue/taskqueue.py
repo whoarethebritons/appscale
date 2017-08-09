@@ -785,10 +785,6 @@ class Task(object):
       InvalidTaskError: If the task is invalid.
     """
 
-
-
-
-
     if 'HTTP_HOST' not in os.environ:
       logging.warning(
           'The HTTP_HOST environment variable was not set, but is required '
@@ -802,10 +798,8 @@ class Task(object):
     elif self.__target is not None:
       host = self.__host_from_target(self.__target)
       if host:
-        logging.info("CURRENT_VERSION_ID: {}".format(os.environ[
-                                                       'CURRENT_VERSION_ID']))
-        self.__headers['Version'] = os.environ['CURRENT_VERSION_ID'].split('.')[0]
-        self.__headers['Module'] = os.environ['CURRENT_VERSION_ID'].split('.')[1]
+
+
         self.__headers['Host'] = host
     elif 'Host' in self.__headers:
       self.__target = self.__target_from_host(self.__headers['Host'])
@@ -867,16 +861,15 @@ class Task(object):
     default_hostname = app_identity.get_default_version_hostname()
     if default_hostname is None:
       return None
-    # AppScale: set target so that AppTaskQueue backend can handle it.
+    # AppScale: We do not support the instance parameter.
     target_info = target.split('.')
     if len(target_info) > 2:
-      taskqueue_service_pb.TaskQueueServiceError.INVALID_REQUEST(
-        'AppScale does not support instance parameter for target, i.e. '
+      raise InvalidTaskError(
+        'AppScale does not support instance parameter for target, e.g. '
         'instance.version.module')
 
-
-    # AppScale: do not send default_hostname, AppTaskQueue can get that and
-    # it makes it simpler to determine whether we have version.module as target.
+    # AppScale: do not send default_hostname, AppTaskQueue will get that and
+    # it makes it simpler to determine whether we have a target.
     return target
 
   @staticmethod
