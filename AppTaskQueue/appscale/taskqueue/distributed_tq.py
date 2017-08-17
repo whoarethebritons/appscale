@@ -283,8 +283,8 @@ class DistributedTaskQueue():
 
     self.db_access = db_access
     self.__force_reload = False
-    self.load_balancer = appscale_info.get_load_balancer_ips()[0]
-    self.service_manager = GlobalServiceManager(zk_client, db_access)
+    self.load_balancers = appscale_info.get_load_balancer_ips()
+    self.service_manager = GlobalServiceManager(zk_client)
 
   def get_queue(self, app, queue):
     """ Fetches a Queue object.
@@ -631,7 +631,7 @@ class DistributedTaskQueue():
     bulk_response = taskqueue_service_pb.TaskQueueBulkAddResponse()
     bulk_request.add_add_request().CopyFrom(request)
 
-    self.__bulk_add(bulk_request, bulk_response)
+    self.__bulk_add(source_info, bulk_request, bulk_response)
 
     if bulk_response.taskresult_size() == 1:
       result = bulk_response.taskresult(0).result()
@@ -868,31 +868,6 @@ class DistributedTaskQueue():
       args['max_backoff_sec'] = queue.max_backoff_seconds
       args['max_doublings'] = queue.max_doublings
 
-      # If we could not get the target from the host, try to get it from the
-      # queue config.
-      if queue.target:
-        target_url = self.get_target_from_queue(app_id, source_info,
-                                                queue.target)
-      # If we cannot get anything from the queue config, we try the target from
-      # the request.
-      else:
-        # Try to get the target from host (python sdk will set the target via
-        # the Host header). Java sdk does not include Host header, so we catch
-        # the KeyError.
-        try:
-          target_url = self.get_target_from_host(app_id, source_info,
-                                                 headers['Host'])
-        # If we cannot get the target from the request we use the source
-        # module and version.
-        except KeyError:
-          target_url = "http://{ip}:{port}".format(
-            ip=self.load_balancer,
-            port=self.get_module_port(app_id, source_info, target_info=[]))
-
-      args['url'] = "{target}{url}".format(target=target_url, url=request.url())
-      logger.debug("Old url: {0} New url: {1}".format(request.url(),
-                                                     args['url']))
-
     # Override defaults.
     if request.has_retry_parameters():
       retry_params = request.retry_parameters()
@@ -907,44 +882,46 @@ class DistributedTaskQueue():
       if retry_params.has_max_doublings():
         args['max_doublings'] = request.\
                                   retry_parameters().max_doublings()
+    logging.debug("Old url: {}".format(request.url()))
+    target_url = "http://{ip}:{port}".format(
+      ip=self.load_balancers[0],
+      port=self.get_module_port(app_id, source_info, target_info=[]))
+
+    try:
+      host = headers['Host']
+    except KeyError:
+      host = None
+    else:
+      host =  host if TARGET_REGEX.match(host) else None
+
+    # Try to set target based on queue config.
+    if queue.target:
+      target_url = self.get_target_url(app_id, source_info, queue.target)
+    # If we cannot get anything from the queue config, we try the target from
+    # the request (python sdk will set the target via the Host header). Java
+    # sdk does not include Host header, so we catch the KeyError.
+    elif host:
+      target_url = self.get_target_url(app_id, source_info, host)
+
+
+    args['url'] = "{target}{url}".format(target=target_url, url=request.url())
+    logging.debug("New url: {}".format(args['url']))
     return args
 
-  def get_target_from_queue(self, app_id, source_info, target):
+  def get_target_url(self, app_id, source_info, target):
     """ Gets the url for the target using the queue's target defined in the
-    configuration file.
+    configuration file or the request's host header.
     
     Args:
       app_id: The application id, used to lookup module port.
       source_info: A dictionary containing the source version and module ids.
-      target: A string containing the value of queue.target.
+      target: A string containing the value of queue.target or the host header.
     Returns:
        A url as a string for the given target.
     """
     target_info = target.split('.')
     return "http://{ip}:{port}".format(
-      ip=self.load_balancer,
-      port=self.get_module_port(app_id, source_info, target_info))
-
-  def get_target_from_host(self, app_id, source_info, host):
-    """ Gets the url for the target using the Host header.
-    
-    Args:
-      app_id: The application id, used to lookup module port.
-      source_info: A dictionary containing the source version and module ids.
-      host: A string containing the value of the Task's host from target or
-        the HTTP_HOST (which would contain AppScale's login ip).
-        
-    Returns:
-      A url as a string for the given target or None if target contains the
-        AppScale login ip because the Task did not specify a target. If this
-        method returns None the target will be determined by the queue or use
-        the current running version and module.
-    """
-    if not TARGET_REGEX.match(host):
-      return None
-    target_info = host.split('.')
-    return "http://{ip}:{port}".format(
-      ip=self.load_balancer,
+      ip=self.load_balancers[0],
       port=self.get_module_port(app_id, source_info, target_info))
 
   def get_module_port(self, app_id, source_info, target_info):
@@ -962,11 +939,11 @@ class DistributedTaskQueue():
         self.service_manager which maintains a dict of zookeeper info.
     """
     try:
-      target_module = target_info.pop(-1)
+      target_module = target_info.pop()
     except IndexError:
       target_module = source_info['module_id']
     try:
-      target_version = target_info.pop(-1)
+      target_version = target_info.pop()
     except IndexError:
       target_version = source_info['version_id']
     logger.debug("app: {0} version: {1} module: {2}".format(
