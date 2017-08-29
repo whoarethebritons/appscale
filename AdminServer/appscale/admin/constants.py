@@ -35,6 +35,11 @@ class OperationTimeout(Exception):
   pass
 
 
+class InvalidSource(Exception):
+  """ Indicates that a revision's source code is invalid. """
+  pass
+
+
 class ServingStatus(object):
   """ The possible serving states for a project or version. """
   SERVING = 'SERVING'
@@ -56,7 +61,7 @@ UNPACK_ROOT = os.path.join('/', 'var', 'apps')
 DEFAULT_PORT = 17442
 
 # The default version for a service.
-DEFAULT_VERSION = 'default'
+DEFAULT_VERSION = 'v1'
 
 # The default service.
 DEFAULT_SERVICE = 'default'

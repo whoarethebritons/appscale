@@ -5,6 +5,7 @@ import json
 import os
 from datetime import timedelta
 
+from kazoo.exceptions import ZookeeperError
 from tornado import gen
 from tornado.ioloop import IOLoop
 from tornado.options import options
@@ -57,11 +58,13 @@ class ProjectPushWorkerManager(object):
       monit_operator: A MonitOperator.
       project_id: A string specifying a project ID.
     """
+    self.zk_client = zk_client
     self.project_id = project_id
     self.monit_operator = monit_operator
-    queues_node = '/appscale/projects/{}/queues'.format(project_id)
-    self.watch = zk_client.DataWatch(queues_node, self._update_worker)
+    self.queues_node = '/appscale/projects/{}/queues'.format(project_id)
+    self.watch = zk_client.DataWatch(self.queues_node, self._update_worker)
     self.monit_watch = 'celery-{}'.format(project_id)
+    self._stopped = False
 
   @gen.coroutine
   def update_worker(self, queue_config):
@@ -76,7 +79,7 @@ class ProjectPushWorkerManager(object):
     # Start the worker if it doesn't exist. Restart it if it does.
     if status == MonitStates.MISSING:
       command = self.celery_command()
-      env_vars = {'APP_ID': self.project_id, 'HOST': options.login_ip,
+      env_vars = {'APP_ID': self.project_id, 'HOST': options.load_balancers[0],
                   'C_FORCE_ROOT': True}
       pidfile = os.path.join(PID_DIR, 'celery-{}.pid'.format(self.project_id))
       create_config_file(self.monit_watch, command, pidfile, env_vars=env_vars,
@@ -85,11 +88,7 @@ class ProjectPushWorkerManager(object):
       yield self.monit_operator.reload()
     else:
       logging.info('Restarting push worker for {}'.format(self.project_id))
-      # Monit behaves unexpectedly with a restart. This hack makes it behave
-      # more smoothly.
-      yield self.monit_operator.send_command(self.monit_watch, 'stop')
-      yield gen.sleep(.5)
-      yield self.monit_operator.send_command(self.monit_watch, 'start')
+      yield self.monit_operator.send_command(self.monit_watch, 'restart')
 
     start_future = self.monit_operator.ensure_running(self.monit_watch)
     yield gen.with_timeout(timedelta(seconds=60), start_future,
@@ -117,6 +116,13 @@ class ProjectPushWorkerManager(object):
       '--statedb', state_db,
       '-Ofair'
     ])
+
+  def ensure_watch(self):
+    """ Restart the watch if it has been cancelled. """
+    if self._stopped:
+      self._stopped = False
+      self.watch = self.zk_client.DataWatch(self.queues_node,
+                                            self._update_worker)
 
   @gen.coroutine
   def _wait_for_stable_state(self):
@@ -158,11 +164,21 @@ class ProjectPushWorkerManager(object):
       queue_config: A JSON string specifying queue configuration.
     """
     main_io_loop = IOLoop.instance()
-    main_io_loop.add_callback(self.update_worker, queue_config)
 
-  def stop(self):
-    """ Cancels the ZooKeeper watch for the project's queue configuration. """
-    self.watch._stopped = True
+    # Prevent further watches if they are no longer needed.
+    if queue_config is None:
+      try:
+        project_exists = self.zk_client.exists(
+          '/appscale/projects/{}'.format(self.project_id)) is not None
+      except ZookeeperError:
+        # If the project has been deleted, an extra "exists" watch will remain.
+        project_exists = True
+
+      if not project_exists:
+        self._stopped = True
+        return False
+
+    main_io_loop.add_callback(self.update_worker, queue_config)
 
 
 class GlobalPushWorkerManager(object):
@@ -189,13 +205,15 @@ class GlobalPushWorkerManager(object):
     to_stop = [project for project in self.projects
                if project not in new_project_list]
     for project_id in to_stop:
-      self.projects[project_id].stop()
       del self.projects[project_id]
 
     for new_project_id in new_project_list:
       if new_project_id not in self.projects:
         self.projects[new_project_id] = ProjectPushWorkerManager(
           self.zk_client, self.monit_operator, new_project_id)
+
+      # Handle changes that happen between watches.
+      self.projects[new_project_id].ensure_watch()
 
   def _update_projects(self, new_projects):
     """ Handles creation and deletion of projects.
