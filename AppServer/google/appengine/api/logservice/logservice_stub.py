@@ -256,7 +256,8 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
       app_log = logging_capnp.AppLog.new_message()
       app_log.time = log.timestamp_usec()
       app_log.level = log.level()
-      app_log.message = log.message()
+      logging.info("APP LOG MESSAGE LENGTH: {}".format(len(log.message())))
+      app_log.message = "{}\0".format(log.message())
       app_logs.append(app_log)
       to_remove = len(app_logs) - 1000
       for _ in range(to_remove):
