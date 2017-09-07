@@ -215,7 +215,7 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
     rl.httpVersion = http_version
     rl.userAgent = user_agent
     rl.host = host
-    self._pending_requests_applogs[request_id] = rl.init_resizable_list('appLogs')
+    self._pending_requests_applogs[request_id] = []
 
   @apiproxy_stub.Synchronized
   def end_request(self, request_id, status, response_size, end_time=None):
@@ -237,7 +237,7 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
     rl.status = status
     rl.responseSize = response_size
     rl.endTime = end_time
-    self._pending_requests_applogs[request_id].finish()
+    rl.appLogs = self._pending_requests_applogs[request_id]
     buf = rl.to_bytes()
     packet = 'l%s%s' % (struct.pack('I', len(buf)), buf)
     self._send_to_logserver(rl.appId, packet)
@@ -252,10 +252,16 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
     group = log_service_pb.UserAppLogGroup(request.logs())
     logs = group.log_line_list()
     for log in logs:
-      al = self._pending_requests_applogs[request_id].add()
-      al.time = log.timestamp_usec()
-      al.level = log.level()
-      al.message = log.message()
+      app_logs = self._pending_requests_applogs[request_id]
+      app_log = logging_capnp.AppLog.new_message()
+      app_log.time = log.timestamp_usec()
+      app_log.level = log.level()
+      app_log.message = log.message()
+      app_logs.append(app_log)
+      to_remove = len(app_logs) - 1000
+      for _ in range(to_remove):
+        del app_logs[0]      
+
 
   @apiproxy_stub.Synchronized
   def _Dynamic_Read(self, request, response, request_id):
