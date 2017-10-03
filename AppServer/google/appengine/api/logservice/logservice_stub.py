@@ -136,13 +136,13 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
     queue = self._log_server[key]
     queue.put(connection)
 
-  def _send_to_logserver(self, app_id, packet, totalsent=0, retries=0):
-    while retries < 5:
+  def _send_to_logserver(self, app_id, packet, retries=0):
+    while retries < self.MAX_RETRIES:
       key, log_server = self._get_log_server(app_id, True)
       try:
-        sent = log_server.sendall(packet)
+        log_server.sendall(packet)
         break
-      except socket.error, e:
+      except socket.error:
         logging.exception("Failed to send packet")
         retries += 1
 
