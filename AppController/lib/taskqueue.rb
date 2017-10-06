@@ -189,7 +189,7 @@ module TaskQueue
     # - the old one is to look into /etc/hosts for it
     # - another one is to just try to resolve it
     # - finally we give up and use the IP address
-    master_tq_host = `cat /etc/hosts | grep #{master_ip} | tr -s \" \" | cut -d \" \" -f2`.chomp
+    master_tq_host = `sudo cat /etc/hosts | grep #{master_ip} | tr -s \" \" | cut -d \" \" -f2`.chomp
     if master_tq_host.empty?
       begin
         master_tq_host = Resolv.getname(master_ip)
@@ -268,7 +268,8 @@ module TaskQueue
   # with our secret key, use the same key here but hashed as to not reveal the
   # actual key.
   def self.write_cookie()
-    HelperFunctions.write_file(COOKIE_FILE, HelperFunctions.get_taskqueue_secret())
+    Djinn.log_run("echo #{HelperFunctions.get_taskqueue_secret()} > #{COOKIE_FILE}")
+#    HelperFunctions.write_file(COOKIE_FILE, HelperFunctions.get_taskqueue_secret())
   end
 
 

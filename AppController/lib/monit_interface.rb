@@ -32,7 +32,7 @@ module MonitInterface
   MONIT = "/usr/bin/monit"
 
   def self.start_monit()
-    ret = system("service --status-all 2> /dev/null | grep monit | grep + > /dev/null")
+    ret = system("sudo service --status-all 2> /dev/null | grep monit | grep + > /dev/null")
     self.run_cmd("service monit start") unless ret
     return ret
   end
@@ -199,7 +199,7 @@ BOO
   end
 
   def self.is_running?(watch)
-    output = self.run_cmd("#{MONIT} summary | grep #{watch} | grep -E '(Running|Initializing)'")
+    output = self.run_cmd("#{MONIT} summary | grep #{watch} | grep -E \'(Running|Initializing)\'")
     return (not output == "")
   end
 
@@ -226,7 +226,7 @@ BOO
   #   A list of application:port records.
   def self.running_appengines()
     appengines = []
-    output = self.run_cmd("#{MONIT} summary | grep -E 'app___.*(Running|Initializing)'")
+    output = self.run_cmd("#{MONIT} summary | grep -E \'app___.*(Running|Initializing)\'")
     appengines_raw = output.gsub! /Process 'app___(.*)-([0-9]*).*/, '\1:\2'
     if appengines_raw
       appengines_raw.split("\n").each{ |appengine|
@@ -242,7 +242,7 @@ BOO
   def self.run_cmd(cmd, sleep=false)
     output = ""
     MONIT_LOCK.synchronize {
-      output = Djinn.log_run(cmd)
+      output = Djinn.log_run_sudo(cmd)
       # Some command (ie reload) requires some extra time to ensure monit
       # is ready for the subsequent command.
       Kernel.sleep(SMALL_WAIT) if sleep

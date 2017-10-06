@@ -1015,8 +1015,7 @@ class Djinn
 
   def enforce_options()
     # Set the proper log level.
-    new_level = Logger::INFO
-    new_level = Logger::DEBUG if @options['verbose'].downcase == "true"
+    new_level = Logger::DEBUG #if @options['verbose'].downcase == "true"
     @@log.level = new_level if @@log.level != new_level
   end
 
@@ -2149,7 +2148,7 @@ class Djinn
     lb_node = get_load_balancer
     ip = lb_node.public_ip
     key = lb_node.ssh_key
-    raw_list = `ssh -i #{key} -o StrictHostkeyChecking=no root@#{ip} 'ejabberdctl connected-users'`
+    raw_list = `ssh -i #{key} -o StrictHostkeyChecking=no appscale@#{ip} 'ejabberdctl connected-users'`
     raw_list.split("\n").each { |userdata|
       online_users << userdata.split("/")[0]
     }
@@ -2371,7 +2370,7 @@ class Djinn
 
     update_firewall
     initialize_nodes_in_parallel(new_nodes)
-    update_hosts_info
+    #update_hosts_info
   end
 
 
@@ -2382,7 +2381,7 @@ class Djinn
 
     Nginx.clear_sites_enabled()
     HAProxy.clear_sites_enabled()
-    Djinn.log_run("echo '' > /root/.ssh/known_hosts") # empty it out but leave the file there
+    Djinn.log_run("echo '' > /home/appscale/.ssh/known_hosts") # empty it out but leave the file there
     CronHelper.clear_app_crontabs()
   end
 
@@ -2475,6 +2474,21 @@ class Djinn
   def self.log_run(command)
     Djinn.log_debug("Running #{command}")
     output = `#{command}`
+    if $?.exitstatus != 0
+      Djinn.log_debug("Command #{command} failed with #{$?.exitstatus}" +
+          " and output: #{output}.")
+    end
+    return output
+  end
+
+
+  # Logs and runs the given command, which is assumed to be trusted and thus
+  # needs no filtering on our part. Obviously this should not be executed by
+  # anything that the user could inject input into. Returns the output of
+  # the command that was executed.
+  def self.log_run_sudo(command)
+    Djinn.log_debug("Running sudo #{command}")
+    output = `sudo #{command}`
     if $?.exitstatus != 0
       Djinn.log_debug("Command #{command} failed with #{$?.exitstatus}" +
           " and output: #{output}.")
@@ -2602,7 +2616,7 @@ class Djinn
           this_nodes_logs = "#{local_log_dir}/#{node.private_ip}"
           FileUtils.mkdir_p(this_nodes_logs)
           Djinn.log_run("scp -r -i #{node.ssh_key} -o StrictHostkeyChecking=no " +
-            "2>&1 root@#{node.private_ip}:#{remote_log_dir} #{this_nodes_logs}")
+            "2>&1 appscale@#{node.private_ip}:#{remote_log_dir} #{this_nodes_logs}")
         }
       }
 
@@ -2828,7 +2842,7 @@ class Djinn
     # list of nodes in the firewall.
     write_locations
     if FIREWALL_IS_ON
-      Djinn.log_run("bash #{APPSCALE_HOME}/firewall.conf")
+      Djinn.log_run_sudo("bash #{APPSCALE_HOME}/firewall.conf")
     end
   end
 
@@ -3908,14 +3922,14 @@ class Djinn
   # root user to directly log in.
   def enable_root_login(ip, ssh_key, user_name)
     options = '-o StrictHostkeyChecking=no -o NumberOfPasswordPrompts=0'
-    backup_keys = 'sudo cp -p /root/.ssh/authorized_keys ' +
-        '/root/.ssh/authorized_keys.old'
+    backup_keys = 'sudo cp -p /home/appscale/.ssh/authorized_keys ' +
+        '/home/appscale/.ssh/authorized_keys.old'
     Djinn.log_run("ssh -i #{ssh_key} #{options} 2>&1 #{user_name}@#{ip} " +
                       "'#{backup_keys}'")
-
+# todo
     merge_keys = 'sudo sed -n ' +
-        '"/Please login/d; w/root/.ssh/authorized_keys" ' +
-        "~#{user_name}/.ssh/authorized_keys /root/.ssh/authorized_keys.old"
+        '"/Please login/d; w/home/appscale/.ssh/authorized_keys" ' +
+        "~#{user_name}/.ssh/authorized_keys /home/appscale/.ssh/authorized_keys.old"
     Djinn.log_run("ssh -i #{ssh_key} #{options} 2>&1 #{user_name}@#{ip} " +
                       "'#{merge_keys}'")
   end
@@ -3933,7 +3947,7 @@ class Djinn
      "#{APPSCALE_HOME}/scripts", "#{APPSCALE_HOME}/AppServer",
      "#{APPSCALE_HOME}/AppServer_Java", "#{APPSCALE_HOME}/XMPPReceiver",
      "#{APPSCALE_HOME}/LogService"].each { |dir|
-      if system("rsync #{options} #{dir}/* root@#{ip}:#{dir}") != true
+      if system("rsync #{options} #{dir}/* appscale@#{ip}:#{dir}") != true
         Djinn.log_warn("Rsync of #{dir} to #{ip} failed!")
       end
     }
@@ -3946,7 +3960,7 @@ class Djinn
         Kernel.sleep(SMALL_WAIT)
       }
       Djinn.log_info("Copying locations.json to #{dest_node.private_ip}")
-      HelperFunctions.shell("rsync #{options} #{locations_json} root@#{ip}:#{locations_json}")
+      HelperFunctions.shell("rsync #{options} #{locations_json} appscale@#{ip}:#{locations_json}")
     end
   end
 
@@ -4310,9 +4324,9 @@ HOSTS
 
     write_locations
 
-    update_hosts_info
+    #update_hosts_info
     if FIREWALL_IS_ON
-      Djinn.log_run("bash #{APPSCALE_HOME}/firewall.conf")
+      Djinn.log_run_sudo("bash #{APPSCALE_HOME}/firewall.conf")
     end
     write_zookeeper_locations
   end
@@ -4463,7 +4477,7 @@ HOSTS
   def start_ejabberd()
     @state = "Starting up XMPP server"
     my_public = my_node.public_ip
-    Djinn.log_run("rm -f /var/lib/ejabberd/*")
+    Djinn.log_run_sudo("rm -f /var/lib/ejabberd/*")
     Ejabberd.write_config_file(my_public)
 
     # Monit does not have an entry for ejabberd yet. This allows a restart

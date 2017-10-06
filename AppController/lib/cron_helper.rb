@@ -153,7 +153,7 @@ CRON
 
   # Erases all cron jobs for all applications.
   def self.clear_app_crontabs
-    Djinn.log_run('rm -f /etc/cron.d/appscale-*')
+    Djinn.log_run("rm -f /etc/cron.d/appscale-*")
   end
 
 

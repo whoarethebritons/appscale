@@ -59,28 +59,31 @@ def start_zookeeper(clear_datastore)
 
   if clear_datastore
     Djinn.log_info("Removing old zookeeper state.")
-    Djinn.log_run("rm -rfv /var/lib/zookeeper")
-    Djinn.log_run("rm -rfv #{DATA_LOCATION}")
+    Djinn.log_run_sudo("rm -rfv /var/lib/zookeeper")
+    Djinn.log_run_sudo("rm -rfv #{DATA_LOCATION}")
   end
 
   # Detect which version of zookeeper script we have.
   zk_server="zookeeper-server"
-  if system("service --status-all 2> /dev/null | grep zookeeper$ > /dev/null")
+  if system("sudo service --status-all 2> /dev/null | grep zookeeper$ > /dev/null")
     zk_server="zookeeper"
   end
 
   unless File.directory?("#{DATA_LOCATION}")
     Djinn.log_info("Initializing ZooKeeper.")
     # Let's stop zookeeper in case it is still running.
-    system("/usr/sbin/service #{zk_server} stop")
+    system("sudo /usr/sbin/service #{zk_server} stop")
 
     # Let's create the new location for zookeeper.
     Djinn.log_run("mkdir -pv #{DATA_LOCATION}")
-    Djinn.log_run("chown -Rv zookeeper:zookeeper #{DATA_LOCATION}")
+    # myid is needed for multi node configuration.
+    Djinn.log_run("ln -sfv /etc/zookeeper/conf/myid #{DATA_LOCATION}/myid")
+  
+    Djinn.log_run_sudo("sudo chown -Rv zookeeper:zookeeper #{DATA_LOCATION}")
 
     # Only precise (and zookeeper-server) has an init function.
     if zk_server == "zookeeper-server"
-      unless system("/usr/sbin/service #{zk_server} init")
+      unless system("sudo /usr/sbin/service #{zk_server} init")
         Djinn.log_error("Failed to start zookeeper!")
         raise Exception FailedZooKeeperOperationException.new("Failed to" +
           " start zookeeper!")
@@ -88,8 +91,6 @@ def start_zookeeper(clear_datastore)
     end
   end
 
-  # myid is needed for multi node configuration.
-  Djinn.log_run("ln -sfv /etc/zookeeper/conf/myid #{DATA_LOCATION}/myid")
 
   service = `which service`.chomp
   start_cmd = "#{service} #{zk_server} start"

@@ -159,7 +159,7 @@ module HelperFunctions
   NUM_ENTRIES_TO_PRINT = 10
 
   def self.shell(cmd)
-    return `#{cmd}`
+    return `sudo #{cmd}`
   end
 
 

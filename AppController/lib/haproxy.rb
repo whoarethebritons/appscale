@@ -438,20 +438,21 @@ CONFIG
   # Returns:
   #   The total number of active connections for a version.
   def self.count_connections(ip_address, port)
-    current_sessions = 0
-    PosixPsutil::Process.process_iter.each { |process|
-      begin
-        next unless process.name == 'haproxy'
-        process.connections.each{ |connection|
-          if connection.status == 'ESTABLISHED' &&
-              connection.laddr == [ip_address, port]
-            current_sessions += 1
-          end
-        }
-      rescue PosixPsutil::NoSuchProcess
-        next
-      end
-    }
+    cmd = "netstat -an | grep #{port} | grep #{ip_address} | grep ESTABLISHED | wc -l"
+    current_sessions = Djinn.log_run(cmd).to_i
+#    PosixPsutil::Process.process_iter.each { |process|
+#      begin
+#        next unless process.name == 'haproxy'
+#        process.connections.each{ |connection|
+#          if connection.status == 'ESTABLISHED' &&
+#              connection.laddr == [ip_address, port]
+#            current_sessions += 1
+#          end
+#        }
+#      rescue PosixPsutil::NoSuchProcess
+#        next
+#      end
+#    }
     return current_sessions
   end
 
@@ -476,7 +477,7 @@ CONFIG
 
     # Retrieve total and enqueued requests for the given app.
     monitoring_info = Djinn.log_run("echo \"show stat\" | " +
-      "socat stdio unix-connect:#{HAPROXY_PATH}/stats | grep #{full_app_name}")
+      "sudo socat stdio unix-connect:#{HAPROXY_PATH}/stats | grep #{full_app_name}")
 
     if monitoring_info.empty?
       Djinn.log_warn("Didn't see any monitoring info - #{full_app_name} may not " +
@@ -537,7 +538,7 @@ CONFIG
     full_version_name = "gae_#{version_key}"
     running = []
     failed = []
-    servers = Djinn.log_run("echo \"show stat\" | socat stdio " +
+    servers = Djinn.log_run("echo \"show stat\" | sudo socat stdio " +
       "unix-connect:#{HAPROXY_PATH}/stats | grep \"#{full_version_name}\"")
     servers.each_line{ |line|
       parsed_info = line.split(',')

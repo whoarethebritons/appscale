@@ -43,8 +43,8 @@ module AppDashboard
 
     # Pass the secret key and our public IP address (needed to connect to the
     # AppController) to the app.
-    Djinn.log_run("echo \"MY_PUBLIC_IP = '#{public_ip}'\" > #{APPSCALE_HOME}/AppDashboard/lib/local_host.py")
-    Djinn.log_run("echo \"UA_SERVER_IP = '#{private_ip}'\" > #{APPSCALE_HOME}/AppDashboard/lib/uaserver_host.py")
+    `echo \"MY_PUBLIC_IP = '#{public_ip}'\" > #{APPSCALE_HOME}/AppDashboard/lib/local_host.py`
+    `echo \"UA_SERVER_IP = '#{private_ip}'\" > #{APPSCALE_HOME}/AppDashboard/lib/uaserver_host.py`
 
     # TODO: tell the tools to disallow uploading apps called 
     # APP_NAME, and have start_appengine to do the same.   
@@ -58,8 +58,8 @@ module AppDashboard
     HelperFunctions.write_file(port_file, "#{LISTEN_PORT}")
 
     # Restore repo template values.
-    Djinn.log_run("echo \"MY_PUBLIC_IP = 'THIS VALUE WILL BE OVERWRITTEN ON STARTUP'\" > #{APPSCALE_HOME}/AppDashboard/lib/local_host.py")
-    Djinn.log_run("echo \"UA_SERVER_IP = 'THIS VALUE WILL BE OVERWRITTEN ON STARTUP'\" > #{APPSCALE_HOME}/AppDashboard/lib/uaserver_host.py")
+    `echo \"MY_PUBLIC_IP = 'THIS VALUE WILL BE OVERWRITTEN ON STARTUP'\" > #{APPSCALE_HOME}/AppDashboard/lib/local_host.py`
+    `echo \"UA_SERVER_IP = \'THIS VALUE WILL BE OVERWRITTEN ON STARTUP\'\" > #{APPSCALE_HOME}/AppDashboard/lib/uaserver_host.py`
 
     Djinn.log_debug("Done setting dashboard.")
 
