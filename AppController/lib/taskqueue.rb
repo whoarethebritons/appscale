@@ -2,6 +2,7 @@
 
 
 # First-party Ruby libraries
+require 'posixpsutil'
 require 'resolv'
 require 'socket'
 require 'timeout'
@@ -78,6 +79,26 @@ module TaskQueue
        msg = "Couldn't find rabbitmqctl! Not starting rabbitmq server."
        Djinn.log_error(msg)
        raise AppScaleException.new(msg)
+    end
+
+    # On Xenial, rabbitmq starts an epmd daemon that doesn't play well with
+    # ejabberd. This makes sure that the compatible service is started first.
+    begin
+      services = `systemctl list-unit-files`
+      if services.include?('epmd.service')
+        PosixPsutil::Process.processes.each { |process|
+          begin
+            next unless process.name == 'epmd'
+            process.terminate if process.cmdline.include?('-daemon')
+          rescue PosixPsutil::NoSuchProcess
+            next
+          end
+        }
+        `systemctl start epmd`
+      end
+    rescue Errno::ENOENT
+      # Distros without systemd don't have systemctl, and they do not exhibit
+      # the issue.
     end
 
     pidfile = File.join('/', 'var', 'lib', 'rabbitmq', 'mnesia',
