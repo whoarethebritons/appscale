@@ -146,7 +146,7 @@ module TaskQueue
     # The master rabbitmq will set the policy for replication of messages
     # and queues.
     policy = '{"ha-mode":"all", "ha-sync-mode": "automatic"}'
-    Djinn.log_run("#{RABBITMQCTL} set_policy ha-all '' '#{policy}'")
+    Djinn.log_run_sudo("#{RABBITMQCTL} set_policy ha-all '' '#{policy}'")
 
     # Next, start up the TaskQueue Server.
     start_taskqueue_server(verbose)
@@ -206,9 +206,9 @@ module TaskQueue
           HelperFunctions.sleep_until_port_is_open("localhost", SERVER_PORT)
           Djinn.log_debug("Done starting rabbitmq_slave on this node")
 
-          Djinn.log_run("#{RABBITMQCTL} stop_app")
-          Djinn.log_run("#{RABBITMQCTL} join_cluster rabbit@#{master_tq_host}")
-          Djinn.log_run("#{RABBITMQCTL} start_app")
+          Djinn.log_run_sudo("#{RABBITMQCTL} stop_app")
+          Djinn.log_run_sudo("#{RABBITMQCTL} join_cluster rabbit@#{master_tq_host}")
+          Djinn.log_run_sudo("#{RABBITMQCTL} start_app")
 
           Djinn.log_debug("Starting TaskQueue servers on slave node")
           start_taskqueue_server(verbose)
@@ -268,7 +268,7 @@ module TaskQueue
   # with our secret key, use the same key here but hashed as to not reveal the
   # actual key.
   def self.write_cookie()
-    Djinn.log_run("echo #{HelperFunctions.get_taskqueue_secret()} > #{COOKIE_FILE}")
+    Djinn.log_run("sudo bash -c 'echo #{HelperFunctions.get_taskqueue_secret()} > #{COOKIE_FILE}'")
 #    HelperFunctions.write_file(COOKIE_FILE, HelperFunctions.get_taskqueue_secret())
   end
 

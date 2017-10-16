@@ -245,7 +245,7 @@ module HAProxy
       }
 
       # Reload with the new configuration file.
-      Djinn.log_run("#{HAPROXY_BIN} -f #{MAIN_CONFIG_FILE} -p #{PIDFILE}" +
+      Djinn.log_run_sudo("#{HAPROXY_BIN} -f #{MAIN_CONFIG_FILE} -p #{PIDFILE}" +
                     " -D -sf `cat #{PIDFILE}`")
     end
 
@@ -261,7 +261,7 @@ module HAProxy
       }
 
       # Reload with the new configuration file.
-      Djinn.log_run("#{HAPROXY_BIN} -f #{SERVICES_MAIN_FILE} -p #{SERVICES_PIDFILE}" +
+      Djinn.log_run_sudo("#{HAPROXY_BIN} -f #{SERVICES_MAIN_FILE} -p #{SERVICES_PIDFILE}" +
                     " -D -sf `cat #{SERVICES_PIDFILE}`")
     end
   end
