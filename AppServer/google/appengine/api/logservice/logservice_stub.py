@@ -111,7 +111,7 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
     self._pending_requests = defaultdict(logging_capnp.RequestLog.new_message)
     self._pending_requests_applogs = dict()
     self._log_server = defaultdict(Queue)
-    #get head node_private ip from /etc/appscale/head_node_private_ip
+    #get head node_private ip from /etc/appscalehead_node_private_ip
     self._log_server_ip = file_io.read("/etc/appscale/head_node_private_ip").rstrip()
 
   def _get_log_server(self, app_id, blocking):
@@ -243,7 +243,6 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
     rl.responseSize = response_size
     rl.endTime = end_time
     rl.finished = 1
-    self._pending_requests_applogs[request_id].finish()
     rl.appLogs = self._pending_requests_applogs[request_id]
     buf = rl.to_bytes()
     packet = 'l%s%s' % (struct.pack('I', len(buf)), buf)
@@ -328,7 +327,7 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
         _fill_request_log(requestLog, log, request.include_app_logs())
         result_count += 1
 
-if result_count == count:
+        if result_count == count:
           response.mutable_offset().set_request_id(requestLog.offset)
     except:
       logging.exception("Failed to retrieve logs")

@@ -47,7 +47,7 @@ module HAProxy
 
 
   # HAProxy Configuration to use for a thread safe gae app.
-  THREADED_SERVER_OPTIONS = "maxconn 7 check"
+  THREADED_SERVER_OPTIONS = "maxconn 20 check"
 
   # Maximum AppServer threaded connections
   MAX_APPSERVER_CONN = 7

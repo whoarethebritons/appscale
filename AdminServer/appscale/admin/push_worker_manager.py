@@ -23,7 +23,7 @@ from appscale.admin import utils
 from .utils import ensure_path
 
 # The number of tasks the Celery worker can handle at a time.
-CELERY_CONCURRENCY = 1000
+CELERY_CONCURRENCY = 200
 
 # The directory where Celery configuration files are stored.
 CELERY_CONFIG_DIR = os.path.join(CONFIG_DIR, 'celery', 'configuration')

@@ -11,10 +11,8 @@ from tornado.ioloop import IOLoop
 
 from appscale.common.unpackaged import APPSCALE_PYTHON_APPSERVER
 from kazoo.client import KazooState
-
 from . import dbconstants
 from . import helper_functions
-
 from .dbconstants import APP_ENTITY_SCHEMA
 from .dbconstants import ID_KEY_LENGTH
 from .dbconstants import MAX_TX_DURATION
@@ -144,9 +142,8 @@ class DatastoreDistributed():
     self.sequential_allocators = {}
 
     self.zookeeper.handle.add_listener(self._zk_state_listener)
-
+    
     self.io_loop = IOLoop.current()
-
 
   def get_limit(self, query):
     """ Returns the limit that should be used for the given query.

@@ -119,7 +119,7 @@ def execute_task(task, headers, args):
   logger.info('Running {}\n'
               'Headers: {}\n'
               'Args: {}'.format(args['task_name'], headers, loggable_args))
-  url = urlparse(args['url'])
+  url = urlparse(args['url'])        
   timeout = EventletTimeout(MAX_TASK_DURATION)
   try:
     redirects_left = 1
