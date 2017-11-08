@@ -259,6 +259,7 @@ class InfrastructureManagerClient
     parameters['zone'] = credentials['zone'] if credentials['zone']
     parameters['region'] = credentials['region']
     parameters['autoscale_agent'] = true
+    parameters['IS_VERBOSE'] = credentials['verbose']
     Djinn.log_debug("Calling attach_disk with parameters " +
       "#{parameters.inspect}, with disk name #{disk_name} and instance id " +
       "#{instance_id}")
