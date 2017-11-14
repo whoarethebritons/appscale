@@ -4088,6 +4088,17 @@ HOSTS
       Kernel.sleep(SMALL_WAIT)
       retry
     end
+    if @options['infrastructure'] == 'euca'
+      loop {
+        if Dir.glob(device_name).empty?
+          Djinn.log_info("Device #{device_name} does not exist - waiting for " +
+            "it to exist.")
+          Kernel.sleep(SMALL_WAIT)
+        else
+          device_name = Dir.glob(device_name)[0]
+        end
+      }
+    end
     loop {
       if File.exists?(device_name)
         Djinn.log_info("Device #{device_name} exists - mounting it.")
