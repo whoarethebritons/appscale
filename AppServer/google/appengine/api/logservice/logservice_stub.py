@@ -19,6 +19,7 @@
 
 import base64
 import capnp # pylint: disable=unused-import
+import json
 import logging
 import logging_capnp
 import socket
@@ -79,6 +80,7 @@ def _fill_request_log(requestLog, log, include_app_logs):
       line.set_time(appLog.time)
       line.set_level(appLog.level)
       line.set_log_message(appLog.message)
+
 
 class LogServiceStub(apiproxy_stub.APIProxyStub):
   """Python stub for Log Service service."""
@@ -238,6 +240,13 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
     rl.responseSize = response_size
     rl.endTime = end_time
     self._pending_requests_applogs[request_id].finish()
+
+    filename = '/opt/appscale/logserver/{}-{}.json'\
+      .format(rl.appId, rl.requestId)
+    with open(filename, 'a') as f:
+      f.write(json.dumps(rl.to_dict()))
+      f.write('\n')
+
     buf = rl.to_bytes()
     packet = 'l%s%s' % (struct.pack('I', len(buf)), buf)
     self._send_to_logserver(rl.appId, packet)
