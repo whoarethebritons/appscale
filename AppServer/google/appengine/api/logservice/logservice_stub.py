@@ -30,6 +30,8 @@ import time
 import urllib2
 
 from collections import defaultdict
+
+import os
 from google.appengine.api import apiproxy_stub
 from google.appengine.api.logservice import log_service_pb
 from google.appengine.api.modules import (
@@ -43,7 +45,8 @@ from appscale.common import file_io
 
 _I_SIZE = struct.calcsize('I')
 
-LOGSTASH_HTTP_PORT = 31313
+LOGSTASH_REQUESTS_PORT = 31313
+LOGSTASH_LOGS_PORT = 31314
 
 
 def _cleanup_logserver_connection(connection):
@@ -246,17 +249,30 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
     rl.status = status
     rl.responseSize = response_size
     rl.endTime = end_time
+    start_time = rl.startTime
     self._pending_requests_applogs[request_id].finish()
 
     request_info = rl.to_dict()
-    request_info['service_name'] = get_current_module_name()
-    request_info['version_name'] = get_current_version_name()
-    request_info['instance_id'] = get_current_instance_id()
-    req = urllib2.Request('http://localhost:{}'.format(LOGSTASH_HTTP_PORT))
-    req.get_method = lambda: "PUT"
-    req.add_header('Content-Type', 'application/json')
+    request_info['serviceName'] = get_current_module_name()
+    request_info['versionName'] = get_current_version_name()
+    request_info['instanceId'] = os.environ.get('INSTANCE_ID')
+    request_info['duration'] = end_time - start_time
+    log_entries = {'appLogs': [
+      dict(entry, requestId=request_id,
+           orderKey="{}-{}-{}".format(start_time, request_id, entry['time']))
+      for entry in request_info.pop('appLogs', [])
+    ]}
     try:
+      # Send request info
+      req = urllib2.Request('http://localhost:{}'.format(LOGSTASH_REQUESTS_PORT))
+      req.get_method = lambda: 'PUT'
+      req.add_header('Content-Type', 'application/json')
       urllib2.urlopen(req, json.dumps(request_info), timeout=0.5)
+      # Send log entries
+      req = urllib2.Request('http://localhost:{}'.format(LOGSTASH_LOGS_PORT))
+      req.get_method = lambda: 'PUT'
+      req.add_header('Content-Type', 'application/json')
+      urllib2.urlopen(req, json.dumps(log_entries), timeout=0.5)
     except (urllib2.HTTPError, urllib2.URLError, httplib.HTTPException,
             socket.error) as e:
       logging.error('Failed to post data to logstash ({})'.format(e))
