@@ -21,15 +21,20 @@ import base64
 import capnp # pylint: disable=unused-import
 import json
 import logging
+
+import httplib
 import logging_capnp
 import socket
 import struct
 import time
-
+import urllib2
 
 from collections import defaultdict
 from google.appengine.api import apiproxy_stub
 from google.appengine.api.logservice import log_service_pb
+from google.appengine.api.modules import (
+  get_current_module_name, get_current_version_name, get_current_instance_id
+)
 from google.appengine.runtime import apiproxy_errors
 from Queue import Queue, Empty
 
@@ -37,6 +42,8 @@ from Queue import Queue, Empty
 from appscale.common import file_io
 
 _I_SIZE = struct.calcsize('I')
+
+LOGSTASH_HTTP_PORT = 31313
 
 
 def _cleanup_logserver_connection(connection):
@@ -241,11 +248,18 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
     rl.endTime = end_time
     self._pending_requests_applogs[request_id].finish()
 
-    filename = '/opt/appscale/logserver/{}-{}.json'\
-      .format(rl.appId, rl.requestId)
-    with open(filename, 'a') as f:
-      f.write(json.dumps(rl.to_dict()))
-      f.write('\n')
+    request_info = rl.to_dict()
+    request_info['service_name'] = get_current_module_name()
+    request_info['version_name'] = get_current_version_name()
+    request_info['instance_id'] = get_current_instance_id()
+    req = urllib2.Request('http://localhost:{}'.format(LOGSTASH_HTTP_PORT))
+    req.get_method = lambda: "PUT"
+    req.add_header('Content-Type', 'application/json')
+    try:
+      urllib2.urlopen(req, json.dumps(request_info), timeout=0.5)
+    except (urllib2.HTTPError, urllib2.URLError, httplib.HTTPException,
+            socket.error) as e:
+      logging.error('Failed to post data to logstash ({})'.format(e))
 
     buf = rl.to_bytes()
     packet = 'l%s%s' % (struct.pack('I', len(buf)), buf)
