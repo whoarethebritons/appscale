@@ -40,6 +40,7 @@ output {
     index => "%{[appId]}-%{[moduleName]}-%{+YYYY.MM.dd}"
     document_type => "request"
   }
+  stdout { codec => rubydebug}
 }
 
 LOGSTASH_CONF
@@ -76,9 +77,10 @@ output {
   elasticsearch {
     hosts => "${ES_IP}:9200"
     manage_template => false
-    index => "%{[appId]}-%{[moduleName]}-%{+YYYY.MM.dd}"
+    index => "%{[appId]}-%{serviceName]}-%{+YYYY.MM.dd}"
     document_type => "log-entry"
   }
+  stdout { codec => rubydebug}
 }
 
 LOGSTASH_CONF

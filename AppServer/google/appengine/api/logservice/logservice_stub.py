@@ -250,18 +250,45 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
     rl.responseSize = response_size
     rl.endTime = end_time
     start_time = rl.startTime
+    start_time_ms = float(start_time) / 1000
+    end_time_ms = float(end_time) / 1000
     self._pending_requests_applogs[request_id].finish()
 
-    request_info = rl.to_dict()
-    request_info['serviceName'] = get_current_module_name()
-    request_info['versionName'] = get_current_version_name()
-    request_info['instanceId'] = os.environ.get('INSTANCE_ID')
-    request_info['duration'] = end_time - start_time
-    log_entries = {'appLogs': [
-      dict(entry, requestId=request_id,
-           orderKey="{}-{}-{}".format(start_time, request_id, entry['time']))
-      for entry in request_info.pop('appLogs', [])
-    ]}
+    request_info = {
+      'serviceName': get_current_module_name(),
+      'versionName': get_current_version_name(),
+      'instanceId': os.environ.get('INSTANCE_ID'),
+      'startTime': start_time_ms,
+      'endTime': end_time_ms,
+      'latency': end_time_ms - start_time_ms,
+      'level': max(0, 0, *[
+         log.level for log in rl.app_logs
+       ]),
+      'appId': rl.app_id,
+      'host': rl.host,
+      'ip': rl.ip,
+      'method': rl.method,
+      'requestId': request_id,
+      'resource': rl.resource,
+      'responseSize': rl.response_size,
+      'status': rl.status,
+      'userAgent': rl.user_agent,
+    }
+
+    log_entries = [
+      {
+        'time': float(log.time) / 1000,
+        'level': log.level,
+        'requestId': request_id,
+        'message': log.message,
+        'orderKey': "{}-{}-{}".format(start_time, request_id, log.time)
+      }
+      for log in rl.app_logs
+    ]
+
+    logging.info('LOGSTASH-REQUEST-INFO: {}'.format(request_info))
+    logging.info('LOGSTASH-LOG-ENTRIES: {}'.format(log_entries))
+
     try:
       # Send request info
       req = urllib2.Request('http://localhost:{}'.format(LOGSTASH_REQUESTS_PORT))
@@ -272,7 +299,7 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
       req = urllib2.Request('http://localhost:{}'.format(LOGSTASH_LOGS_PORT))
       req.get_method = lambda: 'PUT'
       req.add_header('Content-Type', 'application/json')
-      urllib2.urlopen(req, json.dumps(log_entries), timeout=0.5)
+      urllib2.urlopen(req, json.dumps({'appLogs': log_entries}), timeout=0.5)
     except (urllib2.HTTPError, urllib2.URLError, httplib.HTTPException,
             socket.error) as e:
       logging.error('Failed to post data to logstash ({})'.format(e))
