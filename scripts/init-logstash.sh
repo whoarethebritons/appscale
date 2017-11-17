@@ -22,14 +22,16 @@ input {
 
 filter {
   mutate {
-    id => "%{startTime}-%{[requestId]}"
+    id => "%{[startTime]}-%{[requestId]}"
     remove_field => "headers"
   }
   date {
     match => [ "[startTime]", "UNIX_MS" ]
+    target => "startTime"
   }
   date {
     match => [ "[endTime]", "UNIX_MS" ]
+    target => "endTime"
   }
 }
 
@@ -37,7 +39,7 @@ output {
   elasticsearch {
     hosts => "${ES_IP}:9200"
     manage_template => false
-    index => "%{[appId]}-%{[moduleName]}-%{+YYYY.MM.dd}"
+    index => "%{[appId]}-%{[serviceName]}-%{+YYYY.MM.dd}"
     document_type => "request"
   }
   stdout { codec => rubydebug}
