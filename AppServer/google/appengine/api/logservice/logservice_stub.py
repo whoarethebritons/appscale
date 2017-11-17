@@ -295,11 +295,12 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
       req.get_method = lambda: 'PUT'
       req.add_header('Content-Type', 'application/json')
       urllib2.urlopen(req, json.dumps(request_info), timeout=0.5)
-      # Send log entries
-      req = urllib2.Request('http://localhost:{}'.format(LOGSTASH_LOGS_PORT))
-      req.get_method = lambda: 'PUT'
-      req.add_header('Content-Type', 'application/json')
-      urllib2.urlopen(req, json.dumps({'appLogs': log_entries}), timeout=0.5)
+      if log_entries:
+        # Send log entries
+        req = urllib2.Request('http://localhost:{}'.format(LOGSTASH_LOGS_PORT))
+        req.get_method = lambda: 'PUT'
+        req.add_header('Content-Type', 'application/json')
+        urllib2.urlopen(req, json.dumps({'appLogs': log_entries}), timeout=0.5)
     except (urllib2.HTTPError, urllib2.URLError, httplib.HTTPException,
             socket.error) as e:
       logging.error('Failed to post data to logstash ({})'.format(e))
