@@ -45,8 +45,7 @@ from appscale.common import file_io
 
 _I_SIZE = struct.calcsize('I')
 
-LOGSTASH_REQUESTS_PORT = 31313
-LOGSTASH_LOGS_PORT = 31314
+LOGSTASH_HTTP_PORT = 31313
 
 
 def _cleanup_logserver_connection(connection):
@@ -291,13 +290,13 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
 
     try:
       # Send request info
-      req = urllib2.Request('http://localhost:{}'.format(LOGSTASH_REQUESTS_PORT))
+      req = urllib2.Request('http://localhost:{}'.format(LOGSTASH_HTTP_PORT))
       req.get_method = lambda: 'PUT'
       req.add_header('Content-Type', 'application/json')
       urllib2.urlopen(req, json.dumps(request_info), timeout=0.5)
       if log_entries:
         # Send log entries
-        req = urllib2.Request('http://localhost:{}'.format(LOGSTASH_LOGS_PORT))
+        req = urllib2.Request('http://localhost:{}'.format(LOGSTASH_HTTP_PORT))
         req.get_method = lambda: 'PUT'
         req.add_header('Content-Type', 'application/json')
         urllib2.urlopen(req, json.dumps({'appLogs': log_entries}), timeout=0.5)

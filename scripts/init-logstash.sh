@@ -12,7 +12,7 @@ systemctl start logstash.service
 
 ES_IP="104.198.135.65"
 
-cat > /etc/logstash/conf.d/requests.conf << LOGSTASH_CONF
+cat > /etc/logstash/conf.d/logstash.conf << LOGSTASH_CONF
 
 input {
   http {
@@ -21,68 +21,64 @@ input {
 }
 
 filter {
-  mutate {
-    id => "%{[startTime]}-%{[requestId]}"
-    remove_field => "headers"
+
+  if ([startTime]) {
+    mutate {
+      id => "%{[startTime]}-%{[requestId]}"
+      remove_field => ["headers"]
+    }
+    date {
+      match => [ "[startTime]", "UNIX_MS" ]
+      target => "startTime"
+    }
+    date {
+      match => [ "[endTime]", "UNIX_MS" ]
+      target => "endTime"
+    }
   }
-  date {
-    match => [ "[startTime]", "UNIX_MS" ]
-    target => "startTime"
-  }
-  date {
-    match => [ "[endTime]", "UNIX_MS" ]
-    target => "endTime"
+
+  else {
+    split {
+      field => "appLogs"
+    }
+    mutate {
+      rename => [
+        "[appLogs][orderKey]", "orderKey",
+        "[appLogs][requestId]", "requestId",
+        "[appLogs][time]", "@timestamp",
+        "[appLogs][level]", "level",
+        "[appLogs][message]", "message"
+      ]
+      remove_field => ["appLogs", "headers"]
+    }
+    date {
+      match => [ "[@timestamp]", "UNIX_MS" ]
+    }
   }
 }
+
 
 output {
-  elasticsearch {
-    hosts => "${ES_IP}:9200"
-    manage_template => false
-    index => "%{[appId]}-%{[serviceName]}-%{+YYYY.MM.dd}"
-    document_type => "request"
-  }
-  stdout { codec => rubydebug}
-}
 
-LOGSTASH_CONF
-
-
-cat > /etc/logstash/conf.d/log-entries.conf << LOGSTASH_CONF
-
-input {
-  http {
-    port => 31314
+  if ([startTime]) {
+    elasticsearch {
+      hosts => "${ES_IP}:9200"
+      manage_template => false
+      index => "%{[appId]}-%{[serviceName]}-%{+YYYY.MM.dd}"
+      document_type => "request"
+    }
+    stdout { codec => rubydebug}
   }
-}
 
-filter {
-  split {
-    field => "appLogs"
+  else {
+    elasticsearch {
+      hosts => "${ES_IP}:9200"
+      manage_template => false
+      index => "%{[appId]}-%{serviceName]}-%{+YYYY.MM.dd}"
+      document_type => "log-entry"
+    }
+    stdout { codec => rubydebug}
   }
-  mutate {
-    rename => [
-      "[appLogs][orderKey]", "orderKey",
-      "[appLogs][requestId]", "requestId",
-      "[appLogs][time]", "@timestamp",
-      "[appLogs][level]", "level",
-      "[appLogs][message]", "message"
-    ]
-    remove_field => ["appLogs", "headers"]
-  }
-  date {
-    match => [ "[@timestamp]", "UNIX_MS" ]
-  }
-}
-
-output {
-  elasticsearch {
-    hosts => "${ES_IP}:9200"
-    manage_template => false
-    index => "%{[appId]}-%{serviceName]}-%{+YYYY.MM.dd}"
-    document_type => "log-entry"
-  }
-  stdout { codec => rubydebug}
 }
 
 LOGSTASH_CONF
