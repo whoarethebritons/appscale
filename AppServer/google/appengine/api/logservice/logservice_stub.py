@@ -276,6 +276,7 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
 
     log_entries = [
       {
+        '@metadata': {'appId': rl.appId, 'serviceName': get_current_module_name()},
         'time': float(log.time) / 1000,
         'level': log.level,
         'requestId': request_id,

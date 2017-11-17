@@ -37,11 +37,15 @@ filter {
     }
   }
 
-  else {
+  if ([appLogs]) {
     split {
       field => "appLogs"
     }
-    mutate {
+   date {
+     match => [ "[appLogs][time]", "UNIX_MS" ]
+     target => "[appLogs][time]"
+   }
+   mutate {
       rename => [
         "[appLogs][orderKey]", "orderKey",
         "[appLogs][requestId]", "requestId",
@@ -51,33 +55,29 @@ filter {
       ]
       remove_field => ["appLogs", "headers"]
     }
-    date {
-      match => [ "[@timestamp]", "UNIX_MS" ]
-    }
   }
 }
 
-
 output {
+
+  stdout { codec => rubydebug}
 
   if ([startTime]) {
     elasticsearch {
-      hosts => "${ES_IP}:9200"
+      hosts => "104.198.135.65:9200"
       manage_template => false
-      index => "%{[appId]}-%{[serviceName]}-%{+YYYY.MM.dd}"
+      index => "app-%{[appId]}-%{[serviceName]}-%{+YYYY.MM.dd}"
       document_type => "request"
     }
-    stdout { codec => rubydebug}
   }
 
-  else {
+  if ([appLogs]) {
     elasticsearch {
-      hosts => "${ES_IP}:9200"
+      hosts => "104.198.135.65:9200"
       manage_template => false
-      index => "%{[appId]}-%{serviceName]}-%{+YYYY.MM.dd}"
-      document_type => "log-entry"
+      index => "app-%{[@metadata][appId]}-%{[@metadata][serviceName]}-%{+YYYY.MM.dd}"
+      document_type => "logentry"
     }
-    stdout { codec => rubydebug}
   }
 }
 
