@@ -262,17 +262,17 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
       'endTime': end_time_ms,
       'latency': end_time_ms - start_time_ms,
       'level': max(0, 0, *[
-         log.level for log in rl.app_logs
+         log.level for log in rl.appLogs
        ]),
-      'appId': rl.app_id,
+      'appId': rl.appId,
       'host': rl.host,
       'ip': rl.ip,
       'method': rl.method,
       'requestId': request_id,
       'resource': rl.resource,
-      'responseSize': rl.response_size,
+      'responseSize': rl.responseSize,
       'status': rl.status,
-      'userAgent': rl.user_agent,
+      'userAgent': rl.userAgent,
     }
 
     log_entries = [
@@ -283,7 +283,7 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
         'message': log.message,
         'orderKey': "{}-{}-{}".format(start_time, request_id, log.time)
       }
-      for log in rl.app_logs
+      for log in rl.appLogs
     ]
 
     logging.info('LOGSTASH-REQUEST-INFO: {}'.format(request_info))
