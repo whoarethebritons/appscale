@@ -276,7 +276,6 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
 
     log_entries = [
       {
-        '@metadata': {'appId': rl.appId, 'serviceName': get_current_module_name()},
         'time': float(log.time) / 1000,
         'level': log.level,
         'requestId': request_id,
@@ -285,6 +284,11 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
       }
       for log in rl.appLogs
     ]
+    log_entries_dict = {
+      'appId': rl.appId,
+      'serviceName': get_current_module_name(),
+      'appLogs': log_entries
+    }
 
     logging.info('LOGSTASH-REQUEST-INFO: {}'.format(request_info))
     logging.info('LOGSTASH-LOG-ENTRIES: {}'.format(log_entries))
@@ -300,7 +304,7 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
         req = urllib2.Request('http://localhost:{}'.format(LOGSTASH_HTTP_PORT))
         req.get_method = lambda: 'PUT'
         req.add_header('Content-Type', 'application/json')
-        urllib2.urlopen(req, json.dumps({'appLogs': log_entries}), timeout=0.5)
+        urllib2.urlopen(req, json.dumps(log_entries_dict), timeout=0.5)
     except (urllib2.HTTPError, urllib2.URLError, httplib.HTTPException,
             socket.error) as e:
       logging.error('Failed to post data to logstash ({})'.format(e))

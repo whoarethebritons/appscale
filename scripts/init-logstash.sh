@@ -51,7 +51,9 @@ filter {
         "[appLogs][requestId]", "requestId",
         "[appLogs][time]", "@timestamp",
         "[appLogs][level]", "level",
-        "[appLogs][message]", "message"
+        "[appLogs][message]", "message",
+        "[appId]", "[@metadata][appId]",
+        "[serviceName]", "[@metadata][serviceName]"
       ]
       remove_field => ["appLogs", "headers"]
     }
