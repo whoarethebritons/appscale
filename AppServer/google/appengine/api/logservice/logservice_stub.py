@@ -35,18 +35,17 @@ import os
 from google.appengine.api import apiproxy_stub
 from google.appengine.api.logservice import log_service_pb
 from google.appengine.api.modules import (
-  get_current_module_name, get_current_version_name, get_current_instance_id
+  get_current_module_name, get_current_version_name
 )
 from google.appengine.runtime import apiproxy_errors
 from Queue import Queue, Empty
 
 # Add path to import file_io
-from appscale.common import file_io
+from appscale.common import file_io, appscale_info
 
 _I_SIZE = struct.calcsize('I')
 
-LOGSTASH_HOST = os.environ.get('LOGSTASH_HOST')
-LOGSTASH_HTTP_PORT = 31313
+LOGSTASH_LOCATION = appscale_info.get_logstash_location()
 
 
 def _cleanup_logserver_connection(connection):
@@ -257,7 +256,6 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
     request_info = {
       'serviceName': get_current_module_name(),
       'versionName': get_current_version_name(),
-      'instanceId': os.environ.get('INSTANCE_ID'),
       'startTime': start_time_ms,
       'endTime': end_time_ms,
       'latency': end_time_ms - start_time_ms,
@@ -265,7 +263,8 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
          log.level for log in rl.appLogs
        ]),
       'appId': rl.appId,
-      'host': rl.host,
+      'host': os.environ['MY_IP_ADDRESS'],
+      'port': os.environ['MY_PORT'],
       'ip': rl.ip,
       'method': rl.method,
       'requestId': request_id,
@@ -296,13 +295,13 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
 
     try:
       # Send request info
-      req = urllib2.Request('http://localhost:{}'.format(LOGSTASH_HTTP_PORT))
+      req = urllib2.Request('http://{}'.format(LOGSTASH_LOCATION))
       req.get_method = lambda: 'PUT'
       req.add_header('Content-Type', 'application/json')
       urllib2.urlopen(req, json.dumps(request_info), timeout=2)
       if log_entries:
         # Send log entries
-        req = urllib2.Request('http://localhost:{}'.format(LOGSTASH_HTTP_PORT))
+        req = urllib2.Request('http://{}'.format(LOGSTASH_LOCATION))
         req.get_method = lambda: 'PUT'
         req.add_header('Content-Type', 'application/json')
         urllib2.urlopen(req, json.dumps(log_entries_dict), timeout=2)

@@ -18,6 +18,7 @@ cat > /etc/logstash/conf.d/logstash.conf << LOGSTASH_CONF
 input {
   http {
     port => 31313
+    host => "0.0.0.0"
   }
 }
 
