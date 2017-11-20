@@ -254,6 +254,7 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
     self._pending_requests_applogs[request_id].finish()
 
     request_info = {
+      'generated_id': '{}-{}'.format(start_time, request_id),
       'serviceName': get_current_module_name(),
       'versionName': get_current_version_name(),
       'startTime': start_time_ms,
@@ -276,10 +277,10 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
 
     log_entries = [
       {
+        'generated_id': '{}-{}-{}'.format(start_time, request_id, log.time),
         'time': float(log.time) / 1000,
         'level': log.level,
-        'message': log.message,
-        'orderKey': "{}-{}-{}".format(start_time, request_id, log.time)
+        'message': log.message
       }
       for log in rl.appLogs
     ]

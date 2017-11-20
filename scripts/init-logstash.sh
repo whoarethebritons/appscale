@@ -34,12 +34,10 @@ filter {
       target => "endTime"
     }
     mutate {
-      id => "%{[startTime]}-%{[requestId]}"
-      add_field => {
-        "[@metadata][generated_id]" => "%{[startTime]}-%{[requestId]}"
-      }
+      id => "%{[generated_id]}"
       rename => [
-        "[appscale-host]", "[host]"
+        "[generated_id]", "[@metadata][generated_id]",
+        "[appscale-host]", "[host]",
         "[appId]", "[@metadata][appId]",
         "[serviceName]", "[@metadata][serviceName]"
       ]
@@ -56,16 +54,16 @@ filter {
       target => "[appLogs][time]"
     }
     mutate {
-      id => "%{[appLogs][orderKey]}"
+      id => "%{[appLogs][generated_id]}"
       rename => [
-        "[appLogs][orderKey]", "[@metadata][generated_id]",
+        "[appLogs][generated_id]", "[@metadata][generated_id]",
         "[appLogs][time]", "@timestamp",
         "[appLogs][level]", "level",
         "[appLogs][message]", "message",
         "[appId]", "[@metadata][appId]",
         "[serviceName]", "[@metadata][serviceName]"
       ]
-      remove_field => ["appLogs", "headers"]
+      remove_field => ["appLogs", "headers", "host"]
     }
   }
 }
