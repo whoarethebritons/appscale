@@ -44,28 +44,6 @@ filter {
       remove_field => ["appLogs", "headers", "startTime"]
     }
   }
-
-  if ([appLogs]) {
-    split {
-      field => "appLogs"
-    }
-    date {
-      match => [ "[appLogs][time]", "UNIX_MS" ]
-      target => "[appLogs][time]"
-    }
-    mutate {
-      id => "%{[appLogs][generated_id]}"
-      rename => [
-        "[appLogs][generated_id]", "[@metadata][generated_id]",
-        "[appLogs][time]", "@timestamp",
-        "[appLogs][level]", "level",
-        "[appLogs][message]", "message",
-        "[appId]", "[@metadata][appId]",
-        "[serviceName]", "[@metadata][serviceName]"
-      ]
-      remove_field => ["appLogs", "headers", "host"]
-    }
-  }
 }
 
 output {
@@ -78,16 +56,6 @@ output {
       manage_template => false
       index => "app-%{[@metadata][appId]}-%{[@metadata][serviceName]}-%{+YYYY.MM.dd}"
       document_type => "request"
-      document_id => "%{[@metadata][generated_id]}"
-    }
-  }
-
-  if ([message]) {
-    elasticsearch {
-      hosts => "${ES_IP}:9200"
-      manage_template => false
-      index => "app-%{[@metadata][appId]}-%{[@metadata][serviceName]}-%{+YYYY.MM.dd}"
-      document_type => "logentry"
       document_id => "%{[@metadata][generated_id]}"
     }
   }
