@@ -45,6 +45,7 @@ from appscale.common import file_io
 
 _I_SIZE = struct.calcsize('I')
 
+LOGSTASH_HOST = os.environ.get('LOGSTASH_HOST')
 LOGSTASH_HTTP_PORT = 31313
 
 
@@ -278,7 +279,6 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
       {
         'time': float(log.time) / 1000,
         'level': log.level,
-        'requestId': request_id,
         'message': log.message,
         'orderKey': "{}-{}-{}".format(start_time, request_id, log.time)
       }
@@ -287,6 +287,7 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
     log_entries_dict = {
       'appId': rl.appId,
       'serviceName': get_current_module_name(),
+      'requestId': request_id,
       'appLogs': log_entries
     }
 
@@ -298,13 +299,13 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
       req = urllib2.Request('http://localhost:{}'.format(LOGSTASH_HTTP_PORT))
       req.get_method = lambda: 'PUT'
       req.add_header('Content-Type', 'application/json')
-      urllib2.urlopen(req, json.dumps(request_info), timeout=0.5)
+      urllib2.urlopen(req, json.dumps(request_info), timeout=2)
       if log_entries:
         # Send log entries
         req = urllib2.Request('http://localhost:{}'.format(LOGSTASH_HTTP_PORT))
         req.get_method = lambda: 'PUT'
         req.add_header('Content-Type', 'application/json')
-        urllib2.urlopen(req, json.dumps(log_entries_dict), timeout=0.5)
+        urllib2.urlopen(req, json.dumps(log_entries_dict), timeout=2)
     except (urllib2.HTTPError, urllib2.URLError, httplib.HTTPException,
             socket.error) as e:
       logging.error('Failed to post data to logstash ({})'.format(e))
