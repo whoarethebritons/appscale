@@ -41,7 +41,7 @@ filter {
         "[appId]", "[@metadata][appId]",
         "[serviceName]", "[@metadata][serviceName]"
       ]
-      remove_field => ["appLogs", "headers", "startTime"]
+      remove_field => ["headers", "startTime"]
     }
   }
 }
