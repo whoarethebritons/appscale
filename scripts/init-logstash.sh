@@ -39,6 +39,7 @@ filter {
         "[@metadata][generated_id]" => "%{[startTime]}-%{[requestId]}"
       }
       rename => [
+        "[appscale-host]", "[host]"
         "[appId]", "[@metadata][appId]",
         "[serviceName]", "[@metadata][serviceName]"
       ]
@@ -73,7 +74,7 @@ output {
 
   stdout { codec => rubydebug}
 
-  if ([startTime]) {
+  if ([endTime]) {
     elasticsearch {
       hosts => "${ES_IP}:9200"
       manage_template => false
@@ -83,7 +84,7 @@ output {
     }
   }
 
-  if ([appLogs]) {
+  if ([message]) {
     elasticsearch {
       hosts => "${ES_IP}:9200"
       manage_template => false

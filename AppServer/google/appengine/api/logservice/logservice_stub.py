@@ -263,7 +263,7 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
          log.level for log in rl.appLogs
        ]),
       'appId': rl.appId,
-      'host': os.environ['MY_IP_ADDRESS'],
+      'appscale-host': os.environ['MY_IP_ADDRESS'],
       'port': os.environ['MY_PORT'],
       'ip': rl.ip,
       'method': rl.method,
