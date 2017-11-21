@@ -27,13 +27,15 @@ import logging_capnp
 import socket
 import struct
 import time
-import urllib2
+import requests
 
 from collections import defaultdict
 
 import os
 
 from datetime import datetime
+
+import threading
 from google.appengine.api import apiproxy_stub
 from google.appengine.api.logservice import log_service_pb
 from google.appengine.api.modules import (
@@ -43,7 +45,7 @@ from google.appengine.runtime import apiproxy_errors
 from Queue import Queue, Empty
 
 # Add path to import file_io
-from appscale.common import file_io, appscale_info
+from appscale.common import file_io, appscale_info, retrying
 
 _I_SIZE = struct.calcsize('I')
 
@@ -262,48 +264,48 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
     end_time_ms = float(end_time) / 1000
     self._pending_requests_applogs[request_id].finish()
 
-    request_info = {
-      'generated_id': '{}-{}'.format(start_time, request_id),
-      'serviceName': get_current_module_name(),
-      'versionName': get_current_version_name(),
-      'startTime': start_time_ms,
-      'endTime': end_time_ms,
-      'latency': end_time_ms - start_time_ms,
-      'level': max(0, 0, *[
-         log.level for log in rl.appLogs
-       ]),
-      'appId': rl.appId,
-      'appscale-host': os.environ['MY_IP_ADDRESS'],
-      'port': os.environ['MY_PORT'],
-      'ip': rl.ip,
-      'method': rl.method,
-      'requestId': request_id,
-      'resource': rl.resource,
-      'responseSize': rl.responseSize,
-      'status': rl.status,
-      'userAgent': rl.userAgent,
-      'appLogs': '\n'.join([
-        '{} {} {}'.format(
-          LEVELS[log.level],
-          datetime.utcfromtimestamp(log.time/1000000)
-            .strftime('%Y-%m-%d %H:%M:%S.%f'),
-          log.message
-        )
-        for log in rl.appLogs
-      ])
-    }
+    if LOGSTASH_LOCATION:
+      request_info = {
+        'generated_id': '{}-{}'.format(start_time, request_id),
+        'serviceName': get_current_module_name(),
+        'versionName': get_current_version_name(),
+        'startTime': start_time_ms,
+        'endTime': end_time_ms,
+        'latency': int(end_time_ms - start_time_ms),
+        'level': max(0, 0, *[
+           log.level for log in rl.appLogs
+         ]),
+        'appId': rl.appId,
+        'appscale-host': os.environ['MY_IP_ADDRESS'],
+        'port': int(os.environ['MY_PORT']),
+        'ip': rl.ip,
+        'method': rl.method,
+        'requestId': request_id,
+        'resource': rl.resource,
+        'responseSize': rl.responseSize,
+        'status': rl.status,
+        'userAgent': rl.userAgent,
+        'appLogs': '\n'.join([
+          '{} {} {}'.format(
+            LEVELS[log.level],
+            datetime.utcfromtimestamp(log.time/1000000)
+              .strftime('%Y-%m-%d %H:%M:%S'),
+            log.message
+          )
+          for log in rl.appLogs
+        ])
+      }
 
-    logging.info('LOGSTASH-REQUEST-INFO: {}'.format(request_info))
+      @retrying.retry(retrying_timeout=60)
+      def send_to_logstash():
+        try:
+          # Send request info
+          requests.put('http://{}'.format(LOGSTASH_LOCATION),
+                       json=json.dumps(request_info), timeout=10)
+        except requests.RequestException as e:
+          logging.error('Failed to post data to logstash ({})'.format(e))
 
-    try:
-      # Send request info
-      req = urllib2.Request('http://{}'.format(LOGSTASH_LOCATION))
-      req.get_method = lambda: 'PUT'
-      req.add_header('Content-Type', 'application/json')
-      urllib2.urlopen(req, json.dumps(request_info), timeout=2)
-    except (urllib2.HTTPError, urllib2.URLError, httplib.HTTPException,
-            socket.error) as e:
-      logging.error('Failed to post data to logstash ({})'.format(e))
+      threading.Thread(target=send_to_logstash).start()
 
     buf = rl.to_bytes()
     packet = 'l%s%s' % (struct.pack('I', len(buf)), buf)
