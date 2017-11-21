@@ -45,7 +45,7 @@ from google.appengine.runtime import apiproxy_errors
 from Queue import Queue, Empty
 
 # Add path to import file_io
-from appscale.common import file_io, appscale_info, retrying
+from appscale.common import file_io, appscale_info
 
 _I_SIZE = struct.calcsize('I')
 
@@ -296,12 +296,11 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
         ])
       }
 
-      @retrying.retry(retrying_timeout=60)
       def send_to_logstash():
         try:
           # Send request info
           requests.put('http://{}'.format(LOGSTASH_LOCATION),
-                       json=json.dumps(request_info), timeout=10)
+                       json=request_info, timeout=10)
         except requests.RequestException as e:
           logging.error('Failed to post data to logstash ({})'.format(e))
 
