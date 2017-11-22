@@ -19,10 +19,8 @@
 
 import base64
 import capnp # pylint: disable=unused-import
-import json
 import logging
 
-import httplib
 import logging_capnp
 import socket
 import struct
@@ -49,7 +47,7 @@ from appscale.common import file_io, appscale_info
 
 _I_SIZE = struct.calcsize('I')
 
-LOGSTASH_LOCATION = appscale_info.get_logstash_location()
+LOGSTASH_LOCATION = appscale_info.get_logstash_location() or '130.211.213.171:31313'
 LEVELS = {
   0: 'DEBUG',
   1: 'INFO',
