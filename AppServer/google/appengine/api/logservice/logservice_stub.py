@@ -84,36 +84,40 @@ class RequestsLogger(threading.Thread):
     # Open log file
     self._log_file = open(filename, 'a')
 
-
   def run(self):
     request_info = None
     while True:
       try:
-        if not request_info:
-          # Get new info from the queue if previous has been saved
-          request_info = self._logs_queue.get()
-        if not self._log_file:
-          self._open_log_file(request_info)
-        json.dump(request_info, self._log_file)
-        self._log_file.write('\n')
-        self._log_file.flush()
-        request_info = None
+        try:
+          if not request_info:
+            # Get new info from the queue if previous has been saved
+            request_info = self._logs_queue.get()
+          if not self._log_file:
+            self._open_log_file(request_info)
+          json.dump(request_info, self._log_file)
+          self._log_file.write('\n')
+          self._log_file.flush()
+          request_info = None
 
-      except (OSError, IOError) as err:
-        # Close file to reopen it again later
-        logging.error(
-          'Failed to write request_info to log file ({})\n  Request info: {}'
-          .format(err, request_info or "-"))
-        log_file = self._log_file
-        self._log_file = None
-        log_file.close()
-        time.sleep(5)
+        except (OSError, IOError) as err:
+          # Close file to reopen it again later
+          logging.error(
+            'Failed to write request_info to log file ({})\n  Request info: {}'
+            .format(err, request_info or "-"))
+          log_file = self._log_file
+          self._log_file = None
+          log_file.close()
+          time.sleep(5)
+
+        except Exception as err:
+          logging.error(
+            'Failed to write request_info to log file ({})\n  Request info: {}'
+            .format(err, request_info))
+          time.sleep(5)
 
       except Exception as err:
-        logging.error(
-          'Failed to write request_info to log file ({})\n  Request info: {}'
-          .format(err, request_info))
-        time.sleep(5)
+        # There were cases exception was thrown att writing error
+        pass
 
   def write(self, requests_info):
     try:
@@ -332,6 +336,28 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
     end_time_ms = float(end_time) / 1000
     self._pending_requests_applogs[request_id].finish()
 
+    # Render app logs:
+    try:
+      app_logs_str = u'\n'.join([
+        u'{} {} {}'.format(
+          LEVELS[log.level],
+          datetime.utcfromtimestamp(log.time/1000000)
+            .strftime('%Y-%m-%d %H:%M:%S'),
+          log.message
+        )
+        for log in rl.appLogs
+      ])
+    except UnicodeError:
+      app_logs_str = u'\n'.join([
+        u'{} {} {}'.format(
+          LEVELS[log.level],
+          datetime.utcfromtimestamp(log.time/1000000)
+            .strftime('%Y-%m-%d %H:%M:%S'),
+          unicode(log.message, 'ascii', 'ignore')
+        )
+        for log in rl.appLogs
+      ])
+
     request_info = {
       'generated_id': '{}-{}'.format(start_time, request_id),
       'serviceName': get_current_module_name(),
@@ -352,15 +378,7 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
       'responseSize': rl.responseSize,
       'status': rl.status,
       'userAgent': rl.userAgent,
-      'appLogs': '\n'.join([
-        '{} {} {}'.format(
-          LEVELS[log.level],
-          datetime.utcfromtimestamp(log.time/1000000)
-            .strftime('%Y-%m-%d %H:%M:%S'),
-          log.message
-        )
-        for log in rl.appLogs
-      ])
+      'appLogs': app_logs_str
     }
 
     requests_logger.write(request_info)
