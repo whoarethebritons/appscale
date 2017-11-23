@@ -97,6 +97,7 @@ class RequestsLogger(threading.Thread):
           json.dump(request_info, self._log_file)
           self._log_file.write('\n')
           self._log_file.flush()
+          request_info = None
 
         except (OSError, IOError) as err:
           # Close file to reopen it again later
@@ -128,7 +129,6 @@ class RequestsLogger(threading.Thread):
 
 requests_logger = RequestsLogger()
 requests_logger.start()
-print "CURRENTLY RUNNING THREADS: {}".format(threading.active_count())
 
 
 def _cleanup_logserver_connection(connection):
