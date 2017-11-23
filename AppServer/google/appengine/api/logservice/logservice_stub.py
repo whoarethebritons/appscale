@@ -70,9 +70,9 @@ class RequestsLogger(threading.Thread):
     super(RequestsLogger, self).__init__()
     self.setDaemon(True)
     self._logs_queue = multiprocessing.Queue(self.QUEUE_SIZE)
-    self._logger = None
+    self._log_file = None
 
-  def init_logger_by_1st_request(self, request_info):
+  def _open_log_file(self, request_info):
     # Init logger lazily when application info is available
     app_id = request_info['appId']
     service_id = request_info['serviceName']
@@ -80,24 +80,39 @@ class RequestsLogger(threading.Thread):
     port = request_info['port']
     # Prepare filename
     filename = self.FILENAME_TEMPLATE.format(
-      app=app_id, service=service_id, version=version_id, port=port
-    )
-    file_handler = logging.FileHandler(filename)
-    file_handler.setFormatter('%(message)s')
-    # Initialise logger
-    self._logger = logging.getLogger('appscale-requests')
-    self._logger.handlers = [file_handler]
+      app=app_id, service=service_id, version=version_id, port=port)
+    # Open log file
+    self._log_file = open(filename, 'a')
+
 
   def run(self):
+    request_info = None
     while True:
       try:
-        request_info = self._logs_queue.get()
-        if not self._logger:
-          self.init_logger_by_1st_request(request_info)
-        self._logger.info(json.dumps(request_info))
+        if not request_info:
+          # Get new info from the queue if previous has been saved
+          request_info = self._logs_queue.get()
+        if not self._log_file:
+          self._open_log_file(request_info)
+        json.dump(request_info, self._log_file)
+        self._log_file.write('\n')
+        self._log_file.flush()
+        request_info = None
+
+      except (OSError, IOError) as err:
+        # Close file to reopen it again later
+        logging.error(
+          'Failed to write request_info to log file ({})\n  Request info: {}'
+          .format(err, request_info or "-"))
+        log_file = self._log_file
+        self._log_file = None
+        log_file.close()
+        time.sleep(5)
+
       except Exception as err:
         logging.error(
-          'Failed to write request_info to log file ({})'.format(err))
+          'Failed to write request_info to log file ({})\n  Request info: {}'
+          .format(err, request_info))
         time.sleep(5)
 
   def write(self, requests_info):
