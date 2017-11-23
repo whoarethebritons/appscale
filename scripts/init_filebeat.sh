@@ -21,7 +21,7 @@ filebeat.prospectors:
   json.keys_under_root: true
 
 output.logstash:
-  hosts: ["130.211.213.171:5045"]
+  hosts: ["130.211.213.171:5044"]
 
 FILEBEAT_YML
 
