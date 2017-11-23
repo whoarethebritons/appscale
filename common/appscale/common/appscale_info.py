@@ -251,16 +251,3 @@ def get_search_location():
   except IOError:
     logging.warning("Search role is not configured.")
     return ""
-
-def get_logstash_location():
-  """ Returns the IP and port of where the logstash service is running.
-
-  Returns:
-    A str, the IP and port in the format: IP:PORT. Empty string if the service
-    is not available.
-  """
-  try:
-    return file_io.read(constants.LOGSTASH_FILE_LOC).rstrip()
-  except IOError:
-    logging.warning("Logstash location is not specified.")
-    return ""

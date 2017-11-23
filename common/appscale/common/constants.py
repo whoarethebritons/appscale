@@ -124,9 +124,6 @@ SCHEMA_CHANGE_TIMEOUT = 120
 # Location of where the search service is running.
 SEARCH_FILE_LOC = "/etc/appscale/search_ip"
 
-# Location of where the logstash service is running.
-LOGSTASH_FILE_LOC = "/etc/appscale/logstash_location"
-
 # Service scripts directory.
 SERVICES_DIR = '/etc/init.d'
 

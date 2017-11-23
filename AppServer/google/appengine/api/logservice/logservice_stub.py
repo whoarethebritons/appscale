@@ -21,17 +21,19 @@ import base64
 import capnp # pylint: disable=unused-import
 import logging
 
+import json
 import logging_capnp
 import socket
 import struct
 import time
-import requests
 
 from collections import defaultdict
 
 import os
 
 from datetime import datetime
+
+import multiprocessing
 
 import threading
 from google.appengine.api import apiproxy_stub
@@ -40,14 +42,14 @@ from google.appengine.api.modules import (
   get_current_module_name, get_current_version_name
 )
 from google.appengine.runtime import apiproxy_errors
-from Queue import Queue, Empty
+from Queue import Queue, Empty, Full
 
 # Add path to import file_io
-from appscale.common import file_io, appscale_info
+from appscale.common import file_io
+
 
 _I_SIZE = struct.calcsize('I')
 
-LOGSTASH_LOCATION = appscale_info.get_logstash_location() or '130.211.213.171:31313'
 LEVELS = {
   0: 'DEBUG',
   1: 'INFO',
@@ -55,6 +57,59 @@ LEVELS = {
   3: 'ERROR',
   4: 'CRITICAL',
 }
+
+
+class RequestsLogger(threading.Thread):
+
+  FILENAME_TEMPLATE = (
+    '/opt/appscale/logserver/requests-{app}-{service}-{version}-{port}.log'
+  )
+  QUEUE_SIZE = 1024 * 16
+
+  def __init__(self):
+    super(RequestsLogger, self).__init__()
+    self.setDaemon(True)
+    self._logs_queue = multiprocessing.Queue(self.QUEUE_SIZE)
+    self._logger = None
+
+  def init_logger_by_1st_request(self, request_info):
+    # Init logger lazily when application info is available
+    app_id = request_info['appId']
+    service_id = request_info['serviceName']
+    version_id = request_info['versionName']
+    port = request_info['port']
+    # Prepare filename
+    filename = self.FILENAME_TEMPLATE.format(
+      app=app_id, service=service_id, version=version_id, port=port
+    )
+    file_handler = logging.FileHandler(filename)
+    file_handler.setFormatter('%(message)s')
+    # Initialise logger
+    self._logger = logging.getLogger('appscale-requests')
+    self._logger.handlers = [file_handler]
+
+  def run(self):
+    while True:
+      try:
+        request_info = self._logs_queue.get()
+        if not self._logger:
+          self.init_logger_by_1st_request(request_info)
+        self._logger.info(json.dumps(request_info))
+      except Exception as err:
+        logging.error(
+          'Failed to write request_info to log file ({})'.format(err))
+        time.sleep(5)
+
+  def write(self, requests_info):
+    try:
+      # Put an item on the queue if a free slot is immediately available
+      self._logs_queue.put(requests_info, block=False)
+    except Full:
+      logging.error('Request logs queue is crowded')
+
+
+requests_logger = RequestsLogger()
+requests_logger.start()
 
 
 def _cleanup_logserver_connection(connection):
@@ -262,47 +317,38 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
     end_time_ms = float(end_time) / 1000
     self._pending_requests_applogs[request_id].finish()
 
-    if LOGSTASH_LOCATION:
-      request_info = {
-        'generated_id': '{}-{}'.format(start_time, request_id),
-        'serviceName': get_current_module_name(),
-        'versionName': get_current_version_name(),
-        'startTime': start_time_ms,
-        'endTime': end_time_ms,
-        'latency': int(end_time_ms - start_time_ms),
-        'level': max(0, 0, *[
-           log.level for log in rl.appLogs
-         ]),
-        'appId': rl.appId,
-        'appscale-host': os.environ['MY_IP_ADDRESS'],
-        'port': int(os.environ['MY_PORT']),
-        'ip': rl.ip,
-        'method': rl.method,
-        'requestId': request_id,
-        'resource': rl.resource,
-        'responseSize': rl.responseSize,
-        'status': rl.status,
-        'userAgent': rl.userAgent,
-        'appLogs': '\n'.join([
-          '{} {} {}'.format(
-            LEVELS[log.level],
-            datetime.utcfromtimestamp(log.time/1000000)
-              .strftime('%Y-%m-%d %H:%M:%S'),
-            log.message
-          )
-          for log in rl.appLogs
-        ])
-      }
+    request_info = {
+      'generated_id': '{}-{}'.format(start_time, request_id),
+      'serviceName': get_current_module_name(),
+      'versionName': get_current_version_name(),
+      'startTime': start_time_ms,
+      'endTime': end_time_ms,
+      'latency': int(end_time_ms - start_time_ms),
+      'level': max(0, 0, *[
+         log.level for log in rl.appLogs
+       ]),
+      'appId': rl.appId,
+      'appscale-host': os.environ['MY_IP_ADDRESS'],
+      'port': int(os.environ['MY_PORT']),
+      'ip': rl.ip,
+      'method': rl.method,
+      'requestId': request_id,
+      'resource': rl.resource,
+      'responseSize': rl.responseSize,
+      'status': rl.status,
+      'userAgent': rl.userAgent,
+      'appLogs': '\n'.join([
+        '{} {} {}'.format(
+          LEVELS[log.level],
+          datetime.utcfromtimestamp(log.time/1000000)
+            .strftime('%Y-%m-%d %H:%M:%S'),
+          log.message
+        )
+        for log in rl.appLogs
+      ])
+    }
 
-      def send_to_logstash():
-        try:
-          # Send request info
-          requests.put('http://{}'.format(LOGSTASH_LOCATION),
-                       json=request_info, timeout=10)
-        except requests.RequestException as e:
-          logging.error('Failed to post data to logstash ({})'.format(e))
-
-      threading.Thread(target=send_to_logstash).start()
+    requests_logger.write(request_info)
 
     buf = rl.to_bytes()
     packet = 'l%s%s' % (struct.pack('I', len(buf)), buf)
