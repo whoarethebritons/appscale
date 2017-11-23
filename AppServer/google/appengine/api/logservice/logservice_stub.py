@@ -97,26 +97,25 @@ class RequestsLogger(threading.Thread):
           json.dump(request_info, self._log_file)
           self._log_file.write('\n')
           self._log_file.flush()
-          request_info = None
 
         except (OSError, IOError) as err:
           # Close file to reopen it again later
-          logging.error(
-            'Failed to write request_info to log file ({})\n  Request info: {}'
-            .format(err, request_info or "-"))
+          logging.exception(
+            'Failed to write request_info to log file\n  Request info: {}'
+            .format(request_info or "-"))
           log_file = self._log_file
           self._log_file = None
           log_file.close()
           time.sleep(5)
 
         except Exception as err:
-          logging.error(
-            'Failed to write request_info to log file ({})\n  Request info: {}'
-            .format(err, request_info))
+          logging.exception(
+            'Failed to write request_info to log file\n  Request info: {}'
+            .format(request_info or "-"))
           time.sleep(5)
 
       except Exception as err:
-        # There were cases exception was thrown att writing error
+        # There were cases where exception was thrown at writing error
         pass
 
   def write(self, requests_info):
@@ -129,6 +128,7 @@ class RequestsLogger(threading.Thread):
 
 requests_logger = RequestsLogger()
 requests_logger.start()
+print "CURRENTLY RUNNING THREADS: {}".format(threading.active_count())
 
 
 def _cleanup_logserver_connection(connection):
