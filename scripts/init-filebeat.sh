@@ -9,18 +9,13 @@ usage()
 }
 
 
-LOGSTASH_LOCATION=
+if [[ $# == 2 && $1 == '--logstash' ]]; then
+    LOGSTASH_LOCATION=$2
+else
+    usage
+    exit 1
+fi
 
-while [ "$1" != "" ]; do
-    case $1 in
-        --logstash )   shift
-                       LOGSTASH_LOCATION=$1
-                       ;;
-        * )            usage
-                       exit 1
-    esac
-    shift
-done
 
 if ! systemctl | grep -q filebeat; then
     echo "Installing Filebeat..."
