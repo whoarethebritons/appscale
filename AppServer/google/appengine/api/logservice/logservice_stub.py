@@ -99,7 +99,7 @@ class RequestsLogger(threading.Thread):
           self._log_file.flush()
           request_info = None
 
-        except (OSError, IOError) as err:
+        except (OSError, IOError):
           # Close file to reopen it again later
           logging.exception(
             'Failed to write request_info to log file\n  Request info: {}'
@@ -109,13 +109,13 @@ class RequestsLogger(threading.Thread):
           log_file.close()
           time.sleep(5)
 
-        except Exception as err:
+        except Exception:
           logging.exception(
             'Failed to write request_info to log file\n  Request info: {}'
             .format(request_info or "-"))
           time.sleep(5)
 
-      except Exception as err:
+      except Exception:
         # There were cases where exception was thrown at writing error
         pass
 

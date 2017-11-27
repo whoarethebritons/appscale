@@ -3,6 +3,25 @@
 set -e
 set -u
 
+usage()
+{
+    echo "usage: init-filebeat.sh --logstash IP:PORT"
+}
+
+
+LOGSTASH_LOCATION=
+
+while [ "$1" != "" ]; do
+    case $1 in
+        --logstash )   shift
+                       LOGSTASH_LOCATION=$1
+                       ;;
+        * )            usage
+                       exit 1
+    esac
+    shift
+done
+
 if ! systemctl | grep -q filebeat; then
     echo "Installing Filebeat..."
     curl -L -O https://artifacts.elastic.co/downloads/beats/filebeat/filebeat-5.6.4-amd64.deb
@@ -21,7 +40,7 @@ filebeat.prospectors:
   json.keys_under_root: true
 
 output.logstash:
-  hosts: ["130.211.213.171:5044"]
+  hosts: ["${LOGSTASH_LOCATION}"]
 
 FILEBEAT_YML
 
