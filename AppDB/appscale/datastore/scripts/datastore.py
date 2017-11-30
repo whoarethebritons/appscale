@@ -862,7 +862,9 @@ def main():
     host=zookeeper_locations, start_gc=True, db_access=datastore_batch,
     log_level=logger.getEffectiveLevel())
 
-  zookeeper.handle.add_listener(zk_state_listener)
+  # This is currently causing requests to the datastore server hang after the
+  # reconnections to zookeeper.
+  #zookeeper.handle.add_listener(zk_state_listener)
   zookeeper.handle.ensure_path(DATASTORE_SERVERS_NODE)
   # Since the client was started before adding the listener, make sure the
   # server node gets created.
