@@ -1600,7 +1600,39 @@ class Djinn
       # To prevent future deploys from using the old application code, we
       # force a removal of the application status on disk (for example the
       # code and cronjob) right now.
-      check_stopped_apps
+      if my_node.is_load_balancer?
+        if service_id == DEFAULT_SERVICE && version_id == DEFAULT_VERSION
+          stop_xmpp_for_app(project_id)
+        end
+        Nginx.remove_version(version_key)
+
+        # Since the removal of an app from HAProxy can cause a reset of
+        # the drain flags, let's set them again.
+        HAProxy.remove_version(version_key)
+      end
+
+      if my_node.is_compute?
+        AMS_LOCK.synchronize {
+          Djinn.log_debug("Calling AppManager to stop #{version_key}.")
+          app_manager = AppManagerClient.new(my_node.private_ip)
+          begin
+            app_manager.stop_app(version_key)
+            Djinn.log_info("Asked AppManager to shut down #{version_key}.")
+          rescue FailedNodeException => error
+            Djinn.log_warn("Error stopping #{version_key}: #{error.message}")
+          end
+        }
+
+      if my_node.is_shadow?
+        Djinn.log_info("Removing log configuration for #{version_key}.")
+        FileUtils.rm_f(get_rsyslog_conf(version_key))
+        HelperFunctions.shell("service rsyslog restart")
+      end
+
+      if service_id == DEFAULT_SERVICE && version_id == DEFAULT_VERSION
+        CronHelper.clear_app_crontab(project_id)
+      end
+      Djinn.log_debug("Done cleaning up after stopped version #{version_key}.")
     }
 
     'true'
@@ -4481,50 +4513,21 @@ HOSTS
     end
 
     Djinn.log_debug("Checking applications that have been stopped.")
-    version_list = HelperFunctions.get_loaded_versions
-    version_list.each { |version_key|
+
+    APPS_LOCK.synchronize {
+      versions_list = @versions_loaded
+    }
+    versions_list.each { |version_key|
+      next if ZKInterface.get_versions.include?(version_key)
+
       project_id, service_id, version_id = version_key.split(
         VERSION_PATH_SEPARATOR)
-      next if ZKInterface.get_versions.include?(version_key)
       next if RESERVED_APPS.include?(project_id)
 
       Djinn.log_info(
         "#{version_key} is no longer running: removing old states.")
 
-      if my_node.is_load_balancer?
-        if service_id == DEFAULT_SERVICE && version_id == DEFAULT_VERSION
-          stop_xmpp_for_app(project_id)
-        end
-        Nginx.remove_version(version_key)
-
-        # Since the removal of an app from HAProxy can cause a reset of
-        # the drain flags, let's set them again.
-        HAProxy.remove_version(version_key)
-      end
-
-      if my_node.is_compute?
-        AMS_LOCK.synchronize {
-          Djinn.log_debug("Calling AppManager to stop #{version_key}.")
-          app_manager = AppManagerClient.new(my_node.private_ip)
-          begin
-            app_manager.stop_app(version_key)
-            Djinn.log_info("Asked AppManager to shut down #{version_key}.")
-          rescue FailedNodeException => error
-            Djinn.log_warn("Error stopping #{version_key}: #{error.message}")
-          end
-        }
-      end
-
-      if my_node.is_shadow?
-        Djinn.log_info("Removing log configuration for #{version_key}.")
-        FileUtils.rm_f(get_rsyslog_conf(version_key))
-        HelperFunctions.shell("service rsyslog restart")
-      end
-
-      if service_id == DEFAULT_SERVICE && version_id == DEFAULT_VERSION
-        CronHelper.clear_app_crontab(project_id)
-      end
-      Djinn.log_debug("Done cleaning up after stopped version #{version_key}.")
+      stop_version(version_key, @@secret)
     }
   end
 
