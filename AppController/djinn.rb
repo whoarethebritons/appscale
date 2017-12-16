@@ -1622,6 +1622,7 @@ class Djinn
             Djinn.log_warn("Error stopping #{version_key}: #{error.message}")
           end
         }
+      end
 
       if my_node.is_shadow?
         Djinn.log_info("Removing log configuration for #{version_key}.")
