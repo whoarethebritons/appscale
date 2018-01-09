@@ -71,6 +71,7 @@ class RequestsLogger(threading.Thread):
     self.setDaemon(True)
     self._logs_queue = multiprocessing.Queue(self.QUEUE_SIZE)
     self._log_file = None
+    self._shutting_down = False
 
   def _open_log_file(self, request_info):
     # Init logger lazily when application info is available
@@ -92,6 +93,8 @@ class RequestsLogger(threading.Thread):
           if not request_info:
             # Get new info from the queue if previous has been saved
             request_info = self._logs_queue.get()
+          if not request_info and self._shutting_down:
+            return
           if not self._log_file:
             self._open_log_file(request_info)
           json.dump(request_info, self._log_file)
@@ -119,16 +122,16 @@ class RequestsLogger(threading.Thread):
         # There were cases where exception was thrown at writing error
         pass
 
+  def stop(self):
+    self._shutting_down = True
+    self._logs_queue.put(None)
+
   def write(self, requests_info):
     try:
       # Put an item on the queue if a free slot is immediately available
       self._logs_queue.put(requests_info, block=False)
     except Full:
       logging.error('Request logs queue is crowded')
-
-
-requests_logger = RequestsLogger()
-requests_logger.start()
 
 
 def _cleanup_logserver_connection(connection):
@@ -207,6 +210,15 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
     self._log_server = defaultdict(Queue)
     #get head node_private ip from /etc/appscale/head_node_private_ip
     self._log_server_ip = file_io.read("/etc/appscale/head_node_private_ip").rstrip()
+
+    self._requests_logger = RequestsLogger()
+    self._requests_logger.start()
+
+  def stop_requests_logger(self):
+    self._requests_logger.stop()
+
+  def is_requests_logger_alive(self):
+    return self._requests_logger.is_alive()
 
   def _get_log_server(self, app_id, blocking):
     key = (blocking, app_id)
@@ -387,7 +399,7 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
       'appLogs': app_logs_str
     }
 
-    requests_logger.write(request_info)
+    self._requests_logger.write(request_info)
 
     buf = rl.to_bytes()
     packet = 'l%s%s' % (struct.pack('I', len(buf)), buf)
