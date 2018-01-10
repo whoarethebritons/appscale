@@ -87,6 +87,9 @@ PHP_CGI_LOCATION = "/usr/bin/php-cgi"
 # The location of the App Engine SDK for Go.
 GO_SDK = os.path.join('/', 'opt', 'go_appengine')
 
+# The location of the template directory.
+TEMPLATE_DIR = os.path.join('/', 'root', 'appscale', 'AppManager', 'templates')
+
 HTTP_OK = 200
 
 # The amount of seconds to wait before retrying to add routing.
@@ -302,12 +305,13 @@ def setup_logrotate(app_name, log_size):
   app_logrotate_script = "{0}/appscale-{1}".\
     format(LOGROTATE_CONFIG_DIR, app_name)
 
-  # Application logrotate script content.
-  with open('templates/app-logrotate.conf') as f:
-    contents = f.read()
+  contents = ''
 
-  contents.format(monit_prefix=MONIT_INSTANCE_PREFIX, app_prefix=app_name,
-                  size=log_size)
+  # Application logrotate script content.
+  with open('{}/app-logrotate.conf'.format(TEMPLATE_DIR)) as f:
+    contents = f.read()
+    contents.format(monit_prefix=MONIT_INSTANCE_PREFIX, app_prefix=app_name,
+                    size=log_size)
   logging.debug("Logrotate file: {} - Contents:\n{}".
     format(app_logrotate_script, contents))
 
