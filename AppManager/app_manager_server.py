@@ -302,19 +302,12 @@ def setup_logrotate(app_name, log_size):
   app_logrotate_script = "{0}/appscale-{1}".\
     format(LOGROTATE_CONFIG_DIR, app_name)
 
-  log_prefix = ''.join([MONIT_INSTANCE_PREFIX, app_name])
-
   # Application logrotate script content.
-  contents = """/var/log/appscale/{log_prefix}*.log {{
-  size {size}
-  missingok
-  rotate 7
-  compress
-  delaycompress
-  notifempty
-  copytruncate
-}}
-""".format(log_prefix=log_prefix, size=log_size)
+  with open('templates/app-logrotate.conf') as f:
+    contents = f.read()
+
+  contents.format(monit_prefix=MONIT_INSTANCE_PREFIX, app_prefix=app_name,
+                  size=log_size)
   logging.debug("Logrotate file: {} - Contents:\n{}".
     format(app_logrotate_script, contents))
 
