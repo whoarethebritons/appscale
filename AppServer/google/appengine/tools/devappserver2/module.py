@@ -28,6 +28,7 @@ import os.path
 import random
 import re
 import string
+import struct
 import threading
 import time
 import urllib
@@ -259,7 +260,15 @@ class Module(object):
       runtime_config.skip_files = str(self._module_configuration.skip_files)
       runtime_config.static_files = _static_files_regex_from_handlers(
           self._module_configuration.handlers)
-    runtime_config.api_port = self._api_port
+
+    # AppScale: Pack both API ports into the same field.
+    if (self._external_api_port is not None and
+        self._module_configuration.runtime == 'python27'):
+      port_bytes = struct.pack('HH', self._api_port, self._external_api_port)
+      runtime_config.api_port = struct.unpack('I', port_bytes)[0]
+    else:
+      runtime_config.api_port = self._api_port
+
     runtime_config.stderr_log_level = self._runtime_stderr_loglevel
     runtime_config.datacenter = 'us1'
     runtime_config.auth_domain = self._auth_domain
@@ -352,7 +361,8 @@ class Module(object):
                max_instances,
                use_mtime_file_watcher,
                automatic_restarts,
-               allow_skipped_files):
+               allow_skipped_files,
+               external_api_port=None):
     """Initializer for Module.
 
     Args:
@@ -394,11 +404,14 @@ class Module(object):
       allow_skipped_files: If True then all files in the application's directory
           are readable, even if they appear in a static handler or "skip_files"
           directive.
+      external_api_port: An integer specifying the location of an external API
+          server.
     """
     self._module_configuration = module_configuration
     self._name = module_configuration.module_name
     self._host = host
     self._api_port = api_port
+    self._external_api_port = external_api_port
     self._auth_domain = auth_domain
     self._runtime_stderr_loglevel = runtime_stderr_loglevel
     self._balanced_port = balanced_port
@@ -896,7 +909,8 @@ class AutoScalingModule(Module):
                max_instances,
                use_mtime_file_watcher,
                automatic_restarts,
-               allow_skipped_files):
+               allow_skipped_files,
+               external_api_port=None):
     """Initializer for AutoScalingModule.
 
     Args:
@@ -938,6 +952,8 @@ class AutoScalingModule(Module):
       allow_skipped_files: If True then all files in the application's directory
           are readable, even if they appear in a static handler or "skip_files"
           directive.
+      external_api_port: An integer specifying the location of an external API
+          server.
     """
     super(AutoScalingModule, self).__init__(module_configuration,
                                             host,
@@ -956,7 +972,8 @@ class AutoScalingModule(Module):
                                             max_instances,
                                             use_mtime_file_watcher,
                                             automatic_restarts,
-                                            allow_skipped_files)
+                                            allow_skipped_files,
+                                            external_api_port)
 
     self._process_automatic_scaling(
         self._module_configuration.automatic_scaling)
@@ -1328,7 +1345,8 @@ class ManualScalingModule(Module):
                max_instances,
                use_mtime_file_watcher,
                automatic_restarts,
-               allow_skipped_files):
+               allow_skipped_files,
+               external_api_port=None):
     """Initializer for ManualScalingModule.
 
     Args:
@@ -1370,6 +1388,8 @@ class ManualScalingModule(Module):
       allow_skipped_files: If True then all files in the application's directory
           are readable, even if they appear in a static handler or "skip_files"
           directive.
+      external_api_port: An integer specifying the location of an external API
+          server.
     """
     super(ManualScalingModule, self).__init__(module_configuration,
                                               host,
@@ -1388,7 +1408,8 @@ class ManualScalingModule(Module):
                                               max_instances,
                                               use_mtime_file_watcher,
                                               automatic_restarts,
-                                              allow_skipped_files)
+                                              allow_skipped_files,
+                                              external_api_port)
 
     self._process_manual_scaling(module_configuration.manual_scaling)
 
@@ -1824,7 +1845,8 @@ class BasicScalingModule(Module):
                max_instances,
                use_mtime_file_watcher,
                automatic_restarts,
-               allow_skipped_files):
+               allow_skipped_files,
+               external_api_port=None):
     """Initializer for BasicScalingModule.
 
     Args:
@@ -1866,6 +1888,8 @@ class BasicScalingModule(Module):
       allow_skipped_files: If True then all files in the application's directory
           are readable, even if they appear in a static handler or "skip_files"
           directive.
+      external_api_port: An integer specifying the location of an external API
+          server.
     """
     super(BasicScalingModule, self).__init__(module_configuration,
                                              host,
@@ -1884,7 +1908,8 @@ class BasicScalingModule(Module):
                                              max_instances,
                                              use_mtime_file_watcher,
                                              automatic_restarts,
-                                             allow_skipped_files)
+                                             allow_skipped_files,
+                                             external_api_port)
     self._process_basic_scaling(module_configuration.basic_scaling)
 
     self._instances = []  # Protected by self._condition.
