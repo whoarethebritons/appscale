@@ -551,8 +551,40 @@ class Module(object):
     """
     with self.graceful_shutdown_lock:
       if self.sigterm_sent:
-        start_response('503 Service Unavailable',
-                       [('Content-Type', 'text/plain')])
+        def wrapped_start_response(status, response_headers, exc_info=None):
+          response_headers.append(('Server',
+                                   http_runtime_constants.SERVER_SOFTWARE))
+          should_log_request = not _REQUEST_LOGGING_BLACKLIST_RE.match(
+              environ['PATH_INFO'])
+          if should_log_request:
+            with self._request_data.request(
+                environ,
+                self._module_configuration) as request_id:
+              method = environ.get('REQUEST_METHOD', 'GET')
+              http_version = environ.get('SERVER_PROTOCOL', 'HTTP/1.0')
+              headers = wsgiref.headers.Headers(response_headers)
+              if environ.get('QUERY_STRING'):
+                resource = '%s?%s' % (urllib.quote(environ['PATH_INFO']),
+                                      environ['QUERY_STRING'])
+              else:
+                resource = urllib.quote(environ['PATH_INFO'])
+              status_code = int(status.split(' ', 1)[0])
+              content_length = int(headers.get('Content-Length', 0))
+              logservice = apiproxy_stub_map.apiproxy.GetStub('logservice')
+              logservice.end_request(request_id, status_code, content_length)
+              logging.info('%(module_name)s: '
+                           '"%(method)s %(resource)s %(http_version)s" '
+                           '%(status)d %(content_length)s',
+                           {'module_name': self.name,
+                            'method': method,
+                            'resource': resource,
+                            'http_version': http_version,
+                            'status': status_code,
+                            'content_length': content_length or '-'})
+          return start_response(status, response_headers, exc_info)
+
+        wrapped_start_response('503 Service Unavailable',
+                       [('Content-Type', 'text/plain')])        
         return ['This instance is shutting down']
 
       self.request_count += 1

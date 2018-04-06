@@ -788,6 +788,8 @@ _WHITE_LIST_C_MODULES = [
     'parser',
     'posix',  # Only indirectly through the os module.
     'pyexpat',
+    'pymysql',
+    'pyodbc',
     'pwd',
     '_random',
     '_sha256',  # Python2.5 compatibility

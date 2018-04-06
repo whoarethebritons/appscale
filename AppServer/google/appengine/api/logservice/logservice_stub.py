@@ -117,10 +117,10 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
   def _get_log_server(self, app_id, blocking):
     key = (blocking, app_id)
     queue = self._log_server[key]
-    try:
-      return key, queue.get(False)
-    except Empty:
-      pass
+#    try:
+#      return key, queue.get(False)
+#    except Empty:
+#      pass
     client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
       client.connect((self._log_server_ip, 7422))
@@ -139,6 +139,9 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
   def _send_to_logserver(self, app_id, packet, attempts=0):
     while attempts < self.MAX_RETRIES:
       key, log_server = self._get_log_server(app_id, True)
+      if not log_server:
+        attempts += 1
+        continue
       try:
         log_server.sendall(packet)
         break
@@ -207,7 +210,7 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
     """
     if start_time is None:
       start_time = self._get_time_usec()
-
+    logging.info("Request started: {}".format(request_id))
     rl = self._pending_requests[request_id]
     rl.appId = app_id
     rl.versionId = version_id
@@ -234,6 +237,7 @@ class LogServiceStub(apiproxy_stub.APIProxyStub):
       end_time: An int containing the end time in micro-seconds. If unset, the
         current time is used.
     """
+    logging.info("Ending request: {}".format(request_id))
     if end_time is None:
       end_time = self._get_time_usec()
     rl = self._pending_requests.get(request_id, None)

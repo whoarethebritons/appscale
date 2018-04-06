@@ -802,6 +802,8 @@ class HardenedModulesHook(object):
       'posix',
       'posixpath',
       'pyexpat',
+      'pymysql',
+      'pyodbc',
       'pwd',
       'sha',
       'struct',
