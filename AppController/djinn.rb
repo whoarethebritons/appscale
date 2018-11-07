@@ -495,7 +495,8 @@ class Djinn
     "@versions_loaded",
     "@nodes",
     "@options",
-    "@last_decision"
+    "@last_decision",
+    "@nodes_pending_termination"
   ].freeze
 
   # The amount of memory in MB for each instance class.
@@ -1810,6 +1811,9 @@ class Djinn
     # statistics to the log.
     last_print = Time.now.to_i
 
+    # Last pending terminate instances check.
+    pending_termination_check = Time.now.to_i
+
     until @kill_sig_received do
       # Mark the beginning of the duty cycle.
       start_work_time = Time.now.to_i
@@ -1889,6 +1893,10 @@ class Djinn
         }
       end
       @state = "Done starting up AppScale, now in heartbeat mode"
+
+      if @nodes_pending_termination.any? && \
+          pending_termination_check < (Time.now.to_i - 60 * 5)
+        check_nodes_pending_termination
 
       # Print stats in the log recurrently; works as a heartbeat mechanism.
       if last_print < (Time.now.to_i - 60 * PRINT_STATS_MINUTES)
@@ -3019,6 +3027,7 @@ class Djinn
           break
         end
       }
+      @nodes_pending_termination.add(@nodes[index_to_remove])
       @nodes.delete(@nodes[index_to_remove])
     }
 
@@ -3030,6 +3039,53 @@ class Djinn
         "talking to zookeeper with #{e.message}.")
     end
   end
+
+  def node_successfully_terminated(ip)
+    # Remove our local copy
+    index_to_remove = nil
+    @state_change_lock.synchronize {
+      @nodes_pending_termination.each_index { |i|
+        if @nodes_pending_termination[i].private_ip == ip
+          index_to_remove = i
+          break
+        end
+      }
+      @nodes_pending_termination.delete(@nodes_pending_termination[index_to_remove])
+    }
+
+  def check_nodes_pending_termination
+    if SCALE_LOCK.locked?
+      Djinn.log_debug("Another thread is already working with the InfrastructureManager.")
+      return
+    end
+
+    nodes_successfully_deleted = []
+
+    SCALE_LOCK.synchronize {
+      if @state_change_lock.locked?
+        Djinn.log_debug("Another thread is already working with the state.")
+        return
+      end
+      @state_change_lock.synchronize {
+        @nodes_pending_termination.each { |node_to_remove|
+          imc = InfrastructureManagerClient.new(@@secret)
+          begin
+            imc.terminate_instances(@options, node_to_remove.instance_id)
+          rescue FailedNodeException
+            Djinn.log_warn("Failed to call terminate_instances")
+            return 0
+          rescue AppScaleException
+            Djinn.log_warn("Failed to terminate #{node_to_remove}. Not removing it.")
+            return 0
+          end
+          nodes_successfully_deleted << node_to_remove
+        }
+      }
+    }
+    nodes_successfully_deleted.each { |node_to_remove|
+      node_successfully_terminated(node_to_remove.private_ip)
+    }
+
 
   def wait_for_data
     loop {
@@ -4940,17 +4996,6 @@ HOSTS
       return 0
     end
 
-    imc = InfrastructureManagerClient.new(@@secret)
-    begin
-      imc.terminate_instances(@options, node_to_remove.instance_id)
-    rescue FailedNodeException
-      Djinn.log_warn("Failed to call terminate_instances")
-      return 0
-    rescue AppScaleException
-      Djinn.log_warn("Failed to terminate #{node_to_remove}. Not removing it.")
-      return 0
-    end
-
     remove_node_from_local_and_zookeeper(node_to_remove.private_ip)
 
     to_remove = {}
@@ -4970,6 +5015,19 @@ HOSTS
         @app_info_map[version_key]['appservers'].delete(location)
       }
     }
+
+    imc = InfrastructureManagerClient.new(@@secret)
+    begin
+      imc.terminate_instances(@options, node_to_remove.instance_id)
+    rescue FailedNodeException
+      Djinn.log_warn("Failed to call terminate_instances")
+      return 0
+    rescue AppScaleException
+      Djinn.log_warn("Failed to terminate #{node_to_remove}. Not removing it.")
+      return 0
+    end
+
+    node_successfully_terminated(node_to_remove.private_ip)
 
     @last_scaling_time = Time.now.to_i
     return 1
