@@ -1897,6 +1897,7 @@ class Djinn
       if @nodes_pending_termination.any? && \
           pending_termination_check < (Time.now.to_i - 60 * 5)
         check_nodes_pending_termination
+        pending_termination_check = Time.now.to_i
 
       # Print stats in the log recurrently; works as a heartbeat mechanism.
       if last_print < (Time.now.to_i - 60 * PRINT_STATS_MINUTES)
@@ -3028,7 +3029,7 @@ class Djinn
         end
       }
       @nodes_pending_termination.add(@nodes[index_to_remove])
-      @nodes.delete(@nodes[index_to_remove])
+      @nodes.delete_at(index_to_remove)
     }
 
     # Then remove the remote copy
@@ -3050,7 +3051,7 @@ class Djinn
           break
         end
       }
-      @nodes_pending_termination.delete(@nodes_pending_termination[index_to_remove])
+      @nodes_pending_termination.delete_at(index_to_remove)
     }
 
   def check_nodes_pending_termination
@@ -3071,14 +3072,12 @@ class Djinn
           imc = InfrastructureManagerClient.new(@@secret)
           begin
             imc.terminate_instances(@options, node_to_remove.instance_id)
+            nodes_successfully_deleted << node_to_remove
           rescue FailedNodeException
             Djinn.log_warn("Failed to call terminate_instances")
-            return 0
           rescue AppScaleException
             Djinn.log_warn("Failed to terminate #{node_to_remove}. Not removing it.")
-            return 0
           end
-          nodes_successfully_deleted << node_to_remove
         }
       }
     }
