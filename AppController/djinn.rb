@@ -337,11 +337,11 @@ class Djinn
 
   # How often we should attempt to scale up. It's measured as a multiplier
   # of DUTY_CYCLE.
-  SCALEUP_THRESHOLD = 5
+  SCALEUP_THRESHOLD = 3
 
   # How often we should attempt to decrease the number of AppServers on a
   # given node. It's measured as a multiplier of DUTY_CYCLE.
-  SCALEDOWN_THRESHOLD = 15
+  SCALEDOWN_THRESHOLD = 3
 
   # When scaling down instances we need to use a much longer time in order
   # to reap the benefit of an already running instance.  This is a
@@ -787,6 +787,7 @@ class Djinn
   # Returns:
   #   A sanitized Hash of valid properties.
   def check_options(options)
+    Djinn.log_info("Options on start: #{options}")
     newoptions = {}
     if options.class != Hash
       Djinn.log_warn("check_options received a non-hash parameter.")

@@ -149,7 +149,9 @@ class InstancesHandler(web.RequestHandler):
 
     operation_id = parameters['operation_id']
     if operation_ids.has_key(operation_id):
-      self.write(json_encode(operation_ids.get(operation_id)))
+      operation_id_content = operation_ids.get(operation_id)
+      self.write(json_encode(operation_id_content))
+      logger.info('Operation id received: {}'.format(operation_id_content))
     else:
       logger.error('Operation id not found')
       raise CustomHTTPError(HTTPCodes.NOT_FOUND, message='Operation id not '
@@ -315,6 +317,7 @@ class InstancesHandler(web.RequestHandler):
     try:
       active_public_ips, active_private_ips, active_instances = \
         cls._describe_vms(agent, parameters)
+      logger.info("Active \npublic ips : {} \nprivate: {} \ninstances: {}".format(active_public_ips, active_private_ips, active_instances))
     except (AgentConfigurationException, AgentRuntimeException) as exception:
       status_info['state'] = cls.STATE_FAILED
       status_info['success'] = False
@@ -326,26 +329,25 @@ class InstancesHandler(web.RequestHandler):
 
     try:
       security_configured = agent.configure_instance_security(parameters)
-      instance_info = agent.run_instances(num_vms, parameters,
+      public_ips, private_ips, instance_ids = agent.run_instances(num_vms, parameters,
                                           security_configured,
                                           public_ip_needed=False)
-      ids = instance_info[0]
-      public_ips = instance_info[1]
-      private_ips = instance_info[2]
+      logger.info("After failure \npublic ips : {} \nprivate: {} \ninstances: {}".format(public_ips, private_ips, instance_ids))
       status_info['success'] = True
       status_info['state'] = cls.STATE_SUCCESS
       status_info['vm_info'] = {
         'public_ips': public_ips,
         'private_ips': private_ips,
-        'instance_ids': ids
+        'instance_ids': instance_ids
       }
       logger.info('Successfully finished operation {0}.'.format(
           operation_id))
     except (AgentConfigurationException, AgentRuntimeException) as exception:
       # Check if we have had partial success starting instances.
       try:
-        instance_ids, public_ips, private_ips = \
+        public_ips, private_ips, instance_ids = \
           cls._describe_vms(agent, parameters)
+        logger.info("after failure \npublic ips : {} \nprivate: {} \ninstances: {}".format(public_ips, private_ips, instance_ids))
 
         public_ips = agent.diff(public_ips, active_public_ips)
         if not public_ips:
