@@ -34,6 +34,8 @@ TYPE_TO_DESERIALIZE_METHOD: A dictionary with field types and deserialization
 """
 
 
+import sys
+if sys.version < '2.6': bytes = str
 from google.net.proto2.python.internal import api_implementation
 from google.net.proto2.python.internal import decoder
 from google.net.proto2.python.internal import encoder
@@ -100,6 +102,10 @@ class IntValueChecker(object):
       raise TypeError(message)
     if not self._MIN <= proposed_value <= self._MAX:
       raise ValueError('Value out of range: %d' % proposed_value)
+
+
+
+    proposed_value = self._TYPE(proposed_value)
     return proposed_value
 
 
@@ -128,18 +134,18 @@ class UnicodeValueChecker(object):
   """
 
   def CheckValue(self, proposed_value):
-    if not isinstance(proposed_value, (str, unicode)):
+    if not isinstance(proposed_value, (bytes, unicode)):
       message = ('%.1024r has type %s, but expected one of: %s' %
-                 (proposed_value, type(proposed_value), (str, unicode)))
+                 (proposed_value, type(proposed_value), (bytes, unicode)))
       raise TypeError(message)
 
 
 
-    if isinstance(proposed_value, str):
+    if isinstance(proposed_value, bytes):
       try:
-        proposed_value = unicode(proposed_value, 'ascii')
+        proposed_value = proposed_value.decode('ascii')
       except UnicodeDecodeError:
-        raise ValueError('%.1024r has type str, but isn\'t in 7-bit ASCII '
+        raise ValueError('%.1024r has type bytes, but isn\'t in 7-bit ASCII '
                          'encoding. Non-ASCII strings must be converted to '
                          'unicode objects before being added.' %
                          (proposed_value))
@@ -151,21 +157,25 @@ class Int32ValueChecker(IntValueChecker):
 
   _MIN = -2147483648
   _MAX = 2147483647
+  _TYPE = int
 
 
 class Uint32ValueChecker(IntValueChecker):
   _MIN = 0
   _MAX = (1 << 32) - 1
+  _TYPE = int
 
 
 class Int64ValueChecker(IntValueChecker):
   _MIN = -(1 << 63)
   _MAX = (1 << 63) - 1
+  _TYPE = long
 
 
 class Uint64ValueChecker(IntValueChecker):
   _MIN = 0
   _MAX = (1 << 64) - 1
+  _TYPE = long
 
 
 
@@ -179,7 +189,7 @@ _VALUE_CHECKERS = {
     _FieldDescriptor.CPPTYPE_FLOAT: TypeChecker(
         float, int, long),
     _FieldDescriptor.CPPTYPE_BOOL: TypeChecker(bool, int),
-    _FieldDescriptor.CPPTYPE_STRING: TypeChecker(str),
+    _FieldDescriptor.CPPTYPE_STRING: TypeChecker(bytes),
     }
 
 
