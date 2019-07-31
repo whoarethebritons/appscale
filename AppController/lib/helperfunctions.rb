@@ -101,7 +101,8 @@ module HelperFunctions
   NUM_ENTRIES_TO_PRINT = 10
 
   def self.shell(cmd)
-    output, err_output, status = Open3.capture3(cmd)
+    sudo_cmd = "sudo #{cmd}" #TODO: why
+    output, err_output, status = Open3.capture3(sudo_cmd)
     if status.exitstatus != 0 and err_output
       Djinn.log_warn("Shell commmand #{cmd} failed with error output #{err_output}")
     end

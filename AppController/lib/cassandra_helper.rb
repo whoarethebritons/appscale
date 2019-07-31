@@ -131,7 +131,7 @@ def start_cassandra(clear_datastore, needed, desired, heap_reduction)
 
   # Create Cassandra data directory.
   Djinn.log_run("mkdir -p #{CASSANDRA_DATA_DIR}")
-  Djinn.log_run("chown -R cassandra #{CASSANDRA_DATA_DIR}")
+  Djinn.log_run_sudo("chown -R cassandra #{CASSANDRA_DATA_DIR}")
 
   su = `which su`.chomp
   cmd = "#{CASSANDRA_EXECUTABLE} -p #{PID_FILE}"

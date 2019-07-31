@@ -298,7 +298,7 @@ class Djinn
 
   # The tools uses this location to find deployments info. TODO: to remove
   # this dependency.
-  APPSCALE_TOOLS_CONFIG_DIR = '/root/.appscale'.freeze
+  APPSCALE_TOOLS_CONFIG_DIR = '/home/appscale/.appscale'.freeze
 
   # The location on the local filesystem where the AppController writes
   # the location of all the nodes which are taskqueue nodes.
@@ -2007,7 +2007,7 @@ class Djinn
               'output'=>"Waiting for port #{SSH_PORT} returned #{e.message}"}
     end
     output = HelperFunctions.run_remote_command(ip,
-        "ruby /root/appscale/AppController/terminate.rb#{extra_command}",
+        "ruby /home/appscale/appscale/AppController/terminate.rb#{extra_command}",
         ssh_key, true)
 
     # terminate.rb will print "OK" if it ran successfully
@@ -2114,7 +2114,7 @@ class Djinn
     lb_node = get_load_balancer
     ip = lb_node.public_ip
     key = lb_node.ssh_key
-    raw_list = `ssh -i #{key} -o StrictHostkeyChecking=no root@#{ip} 'ejabberdctl connected-users'`
+    raw_list = `ssh -i #{key} -o StrictHostkeyChecking=no appscale@#{ip} 'ejabberdctl connected-users'`
     raw_list.split("\n").each { |userdata|
       online_users << userdata.split("/")[0]
     }
@@ -2352,6 +2352,7 @@ class Djinn
     Djinn.log_run("rm -f ~/.appscale_cookies")
 
     # Delete (possibly old) mapping of IP <-> HostKey.
+    #TODO: check if home is correct
     if File.exist?(File.expand_path('~/.ssh/known_hosts'))
       @state_change_lock.synchronize {
         @nodes.each { |node|
@@ -2451,6 +2452,21 @@ class Djinn
           " and output: #{output}")
       Djinn.log_debug("Command #{command} error output: " \
           "#{err_output}") if err_output
+    end
+    return output
+  end
+
+
+  # Logs and runs the given command, which is assumed to be trusted and thus
+  # needs no filtering on our part. Obviously this should not be executed by
+  # anything that the user could inject input into. Returns the output of
+  # the command that was executed.
+  def self.log_run_sudo(command)
+    Djinn.log_debug("Running sudo #{command}")
+    output = `sudo #{command}`
+    if $?.exitstatus != 0
+      Djinn.log_debug("Command #{command} failed with #{$?.exitstatus}" +
+          " and output: #{output}.")
     end
     return output
   end
@@ -2572,7 +2588,7 @@ class Djinn
           this_nodes_logs = "#{local_log_dir}/#{node.private_ip}"
           FileUtils.mkdir_p(this_nodes_logs)
           Djinn.log_run("scp -r -i #{node.ssh_key} -o StrictHostkeyChecking=no " \
-            "2>&1 root@#{node.private_ip}:#{remote_log_dir} #{this_nodes_logs}")
+            "2>&1 appscale@#{node.private_ip}:#{remote_log_dir} #{this_nodes_logs}")
         }
       }
 
@@ -2770,7 +2786,7 @@ class Djinn
     # list of nodes in the firewall.
     write_locations
     if FIREWALL_IS_ON
-      Djinn.log_run("bash #{APPSCALE_HOME}/firewall.conf")
+      Djinn.log_run_sudo("bash #{APPSCALE_HOME}/firewall.conf")
     end
   end
 
@@ -3980,12 +3996,13 @@ class Djinn
 
   # Logs into the named host and alters its ssh configuration to enable the
   # root user to directly log in.
+  # TODO: this method is probably broken now
   def enable_root_login(ip, ssh_key, infrastructure)
     options = '-o StrictHostkeyChecking=no -o NumberOfPasswordPrompts=0'
 
     # Determine which user to login as.
-    output = `ssh -i #{ssh_key} #{options} 2>&1 root@#{ip} true`
-    match = /Please login as the user "(.+)" rather than the user "root"/.match(output)
+    output = `ssh -i #{ssh_key} #{options} 2>&1 appscale@#{ip} true`
+    match = /Please login as the user "(.+)" rather than the user "appscale"/.match(output)
     if match.nil?
       if infrastructure == 'azure'
         user_name = 'azureuser'
@@ -3998,14 +4015,14 @@ class Djinn
       user_name = match[1]
     end
 
-    backup_keys = 'sudo cp -p /root/.ssh/authorized_keys ' \
-        '/root/.ssh/authorized_keys.old'
+    backup_keys = 'sudo cp -p /home/appscale/.ssh/authorized_keys ' \
+        '/home/appscale/.ssh/authorized_keys.old'
     Djinn.log_run("ssh -i #{ssh_key} #{options} 2>&1 #{user_name}@#{ip} " \
                       "'#{backup_keys}'")
 
     merge_keys = 'sudo sed -n ' \
-        '"/Please login/d; w/root/.ssh/authorized_keys" ' \
-        "~#{user_name}/.ssh/authorized_keys /root/.ssh/authorized_keys.old"
+        '"/Please login/d; w/home/appscale/.ssh/authorized_keys" ' \
+        "~#{user_name}/.ssh/authorized_keys /home/appscale/.ssh/authorized_keys.old"
     Djinn.log_run("ssh -i #{ssh_key} #{options} 2>&1 #{user_name}@#{ip} " \
                       "'#{merge_keys}'")
   end
@@ -4036,7 +4053,7 @@ class Djinn
       XMPPReceiver
     ).map { |path| File.join(APPSCALE_HOME, path) }
     to_copy.each { |dir|
-      if system("rsync #{options} #{dir}/* root@#{ip}:#{dir}") != true
+      if system("rsync #{options} #{dir}/* appscale@#{ip}:#{dir}") != true
         Djinn.log_warn("Rsync of #{dir} to #{ip} failed!")
       end
     }
@@ -4050,7 +4067,7 @@ class Djinn
         Kernel.sleep(SMALL_WAIT)
       }
       Djinn.log_info("Copying locations.json to #{dest_node.private_ip}")
-      HelperFunctions.shell("rsync #{options} #{locations_json} root@#{ip}:#{locations_json}")
+      HelperFunctions.shell("rsync #{options} #{locations_json} appscale@#{ip}:#{locations_json}")
     end
   end
 
@@ -4354,7 +4371,7 @@ class Djinn
     end
 
     write_locations
-    Djinn.log_run("bash #{APPSCALE_HOME}/firewall.conf") if FIREWALL_IS_ON
+    Djinn.log_run_sudo("bash #{APPSCALE_HOME}/firewall.conf") if FIREWALL_IS_ON
     write_zookeeper_locations
   end
 
@@ -4498,7 +4515,7 @@ class Djinn
     @state = "Starting up memcache"
     Djinn.log_info("Starting up memcache")
     port = 11211
-    start_cmd = "/usr/bin/memcached -m 64 -p #{port} -u root"
+    start_cmd = "/usr/bin/memcached -m 64 -p #{port} -u appscale"
     MonitInterface.start(:memcached, start_cmd)
   end
 
@@ -4508,7 +4525,7 @@ class Djinn
 
   def start_ejabberd
     @state = "Starting up XMPP server"
-    Djinn.log_run("rm -f /var/lib/ejabberd/*")
+    Djinn.log_run_sudo("rm -f /var/lib/ejabberd/*")
     Ejabberd.write_config_file(@options['login'], my_node.private_ip)
     Ejabberd.update_ctl_config
 

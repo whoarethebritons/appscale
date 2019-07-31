@@ -209,7 +209,7 @@ module HAProxy
   # Checks if a given HAProxy config file is valid.
   def self.valid_config?(config_file)
     return false unless File.file?(config_file)
-    system("#{HAPROXY_BIN} -c -f #{config_file}")
+    system("sudo #{HAPROXY_BIN} -c -f #{config_file}")
   end
 
   # Regenerate the configuration file for HAProxy (if anything changed)
@@ -227,7 +227,7 @@ module HAProxy
       }
 
       # Reload with the new configuration file.
-      Djinn.log_run("#{HAPROXY_BIN} -f #{SERVICE_MAIN_FILE} -p #{SERVICE_PIDFILE}" \
+      Djinn.log_run_sudo("#{HAPROXY_BIN} -f #{SERVICE_MAIN_FILE} -p #{SERVICE_PIDFILE}" \
                     " -D -sf `cat #{SERVICE_PIDFILE}`")
     end
   end

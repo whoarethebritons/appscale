@@ -56,18 +56,18 @@ def start_zookeeper(clear_datastore)
 
   if clear_datastore
     Djinn.log_info('Removing old zookeeper state.')
-    Djinn.log_run('rm -rfv /var/lib/zookeeper')
-    Djinn.log_run("rm -rfv #{DATA_LOCATION}")
+    Djinn.log_run_sudo('rm -rfv /var/lib/zookeeper')
+    Djinn.log_run_sudo("rm -rfv #{DATA_LOCATION}")
   end
 
   unless File.directory?(DATA_LOCATION.to_s)
     Djinn.log_info('Initializing ZooKeeper.')
     # Let's stop zookeeper in case it is still running.
-    system("/usr/sbin/service zookeeper stop")
+    system("sudo /usr/sbin/service zookeeper stop")
 
     # Let's create the new location for zookeeper.
     Djinn.log_run("mkdir -pv #{DATA_LOCATION}")
-    Djinn.log_run("chown -Rv zookeeper:zookeeper #{DATA_LOCATION}")
+    Djinn.log_run_sudo("chown -Rv zookeeper:zookeeper #{DATA_LOCATION}")
   end
 
   # myid is needed for multi node configuration.

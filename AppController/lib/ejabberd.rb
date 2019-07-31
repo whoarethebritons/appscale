@@ -164,6 +164,6 @@ module Ejabberd
 
     config_path = "/etc/ejabberd/#{config_file}"
     HelperFunctions.write_file(config_path, config)
-    Djinn.log_run("chown ejabberd #{config_path}")
+    Djinn.log_run_sudo("chown ejabberd #{config_path}")
   end
 end

@@ -22,7 +22,7 @@ module MonitInterface
   MONIT = '/usr/bin/monit'.freeze
 
   def self.start_monit
-    ret = system('service --status-all 2> /dev/null | grep monit' \
+    ret = system('sudo service --status-all 2> /dev/null | grep monit' \
                  ' | grep + > /dev/null')
     run_cmd('service monit start') unless ret
     ret
@@ -253,7 +253,7 @@ BOO
   def self.run_cmd(cmd, sleep = false)
     output = ''
     MONIT_LOCK.synchronize {
-      output = Djinn.log_run(cmd)
+      output = Djinn.log_run_sudo(cmd)
       # Some command (ie reload) requires some extra time to ensure monit
       # is ready for the subsequent command.
       Kernel.sleep(Djinn::SMALL_WAIT) if sleep

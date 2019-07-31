@@ -133,7 +133,7 @@ module TaskQueue
     # The master rabbitmq will set the policy for replication of messages
     # and queues.
     policy = '{"ha-mode":"all", "ha-sync-mode": "automatic"}'
-    Djinn.log_run("#{RABBITMQCTL} set_policy ha-all '' '#{policy}'")
+    Djinn.log_run_sudo("#{RABBITMQCTL} set_policy ha-all '' '#{policy}'")
 
     # Next, start up the TaskQueue Server.
     start_taskqueue_server(verbose)
@@ -174,6 +174,7 @@ module TaskQueue
     # Look up the TaskQueue master's hostname (not the fqdn). To resolve
     # it we use Addrinfo.getnameinfo since Resolv will not use /etc/hosts
     # and this could cause issues on private clusters.
+    # TODO: make sure this works without sudo
     master_tq_host = nil
     begin
       master_tq_host = Addrinfo.ip(master_ip).getnameinfo[0]
@@ -197,9 +198,9 @@ module TaskQueue
           HelperFunctions.sleep_until_port_is_open('localhost', SERVER_PORT)
           Djinn.log_debug('Done starting rabbitmq_slave on this node')
 
-          Djinn.log_run("#{RABBITMQCTL} stop_app")
-          Djinn.log_run("#{RABBITMQCTL} join_cluster rabbit@#{master_tq_host}")
-          Djinn.log_run("#{RABBITMQCTL} start_app")
+          Djinn.log_run_sudo("#{RABBITMQCTL} stop_app")
+          Djinn.log_run_sudo("#{RABBITMQCTL} join_cluster rabbit@#{master_tq_host}")
+          Djinn.log_run_sudo("#{RABBITMQCTL} start_app")
 
           Djinn.log_debug('Starting TaskQueue servers on slave node')
           start_taskqueue_server(verbose)
