@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+groupadd appscale
+useradd -r -m -c "AppScale system user." -g appscale -G sudo,ejabberd,haproxy,memcache,rabbitmq,zookeeper,cassandra -s /bin/bash appscale
+
+echo "appscale ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
+# AppScale
+chown -R appscale:appscale /var/run/appscale
+chown -R appscale:appscale /var/appscale
+chown -R appscale:appscale /root/appscale
+chown -R appscale:appscale /etc/appscale
+chown -R appscale:appscale /opt/appscale #TODO: move to AC
+mkdir -p /var/apps
+chown -R appscale:appscale /var/apps
+
+# Cassandra
+chgrp -R cassandra /opt/cassandra
+chmod -R g+w /opt/cassandra/cassandra/conf
+
+# Zookeeper
+chgrp -R appscale /etc/zookeeper
+chmod -R g+rw /etc/zookeeper
+su appscale -c 'ln -s /etc/zookeeper/conf_example /etc/zookeeper/tmp'
+su appscale -c 'mv -T /etc/zookeeper/tmp /etc/zookeeper/conf'
+
+# HAProxy
+chgrp -R appscale /etc/haproxy
+chmod -R g+w /etc/haproxy
+
+# Nginx
+chgrp -R appscale /etc/nginx
+chmod g+w appscale /etc/nginx
+chmod -R g+w /etc/nginx/sites-enabled
+chmod g+w /etc/nginx/nginx.conf
+
+# Monit
+chown -R appscale:appscale /etc/monit/conf.d
+chmod -R g-w /etc/monit/conf.d
+
+# Ejabberd
+chmod g+rw /etc/ejabberd/ejabberd.cfg
+
+# Rsyslog
+chgrp -R appscale /etc/rsyslog.conf
+chgrp -R appscale /etc/rsyslog.d
+chmod -R g+w /etc/rsyslog.d
+chmod g+w /etc/rsyslog.conf

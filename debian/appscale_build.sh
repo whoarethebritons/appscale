@@ -216,6 +216,7 @@ if [ $1 ]; then
 else
     echo "Installing full AppScale image"
     bash debian/appscale_install.sh all || exit 1
+    bash debian/appscale.postinst || exit 1
 fi
 
 if ! mkdir -p ${CONFIG_DIR}/certs; then
