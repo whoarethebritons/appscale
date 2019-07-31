@@ -16,32 +16,35 @@ class ProjectQueueManager(dict):
   """ Keeps track of queue configuration details for a single project. """
 
   FLUSH_DELETED_INTERVAL = 3 * 60 * 60  # 3h
+  MAX_POSTGRES_BACKED_PROJECTS = 20
 
-  def __init__(self, zk_client, db_access, project_id):
+  def __init__(self, zk_client, project_id):
     """ Creates a new ProjectQueueManager.
 
     Args:
       zk_client: A KazooClient.
-      db_access: A DatastoreProxy.
       project_id: A string specifying a project ID.
     """
     super(ProjectQueueManager, self).__init__()
     self.zk_client = zk_client
     self.project_id = project_id
-    self.db_access = db_access
-
     pg_dns_node = '/appscale/projects/{}/postgres_dsn'.format(project_id)
     try:
       pg_dsn = self.zk_client.get(pg_dns_node)
       logger.info('Using PostgreSQL as a backend for Pull Queues of "{}"'
                   .format(project_id))
-      import psycopg2  # Import psycopg2 lazily
-      self.pg_connection = psycopg2.connect(pg_dsn[0])
+      # Import pg_connection_wrapper (and psycopg2) lazily
+      from appscale.taskqueue import pg_connection_wrapper
+      # TODO: PostgresConnectionWrapper may need an update when
+      #       TaskQueue becomes concurrent
+      self.pg_connection_wrapper = (
+        pg_connection_wrapper.PostgresConnectionWrapper(dsn=pg_dsn[0])
+      )
       self._configure_periodical_flush()
     except NoNodeError:
       logger.info('Using Cassandra as a backend for Pull Queues of "{}"'
                   .format(project_id))
-      self.pg_connection = None
+      self.pg_connection_wrapper = None
     self.queues_node = '/appscale/projects/{}/queues'.format(project_id)
     self.watch = zk_client.DataWatch(self.queues_node,
                                      self._update_queues_watch)
@@ -75,12 +78,11 @@ class ProjectQueueManager(dict):
       queue_info['name'] = queue_name
       if 'mode' not in queue_info or queue_info['mode'] == 'push':
         self[queue_name] = PushQueue(queue_info, self.project_id)
-      elif self.pg_connection:
+      elif self.pg_connection_wrapper:
         self[queue_name] = PostgresPullQueue(queue_info, self.project_id,
-                                             self.pg_connection)
+                                             self.pg_connection_wrapper)
       else:
-        self[queue_name] = PullQueue(queue_info, self.project_id,
-                                     self.db_access)
+        self[queue_name] = PullQueue(queue_info, self.project_id)
 
     # Establish a new Celery connection based on the new queues, and close the
     # old one.
@@ -108,8 +110,8 @@ class ProjectQueueManager(dict):
     """ Close the Celery and Postgres connections if they still exist. """
     if self.celery is not None:
       self.celery.close()
-    if self.pg_connection is not None:
-      self.pg_connection.close()
+    if self.pg_connection_wrapper is not None:
+      self.pg_connection_wrapper.close()
 
   def _update_queues_watch(self, queue_config, _):
     """ Handles updates to a queue configuration node.
@@ -153,16 +155,14 @@ class ProjectQueueManager(dict):
 
 class GlobalQueueManager(dict):
   """ Keeps track of queue configuration details for all projects. """
-  def __init__(self, zk_client, db_access):
+  def __init__(self, zk_client):
     """ Creates a new GlobalQueueManager.
 
     Args:
       zk_client: A KazooClient.
-      db_access: A DatastoreProxy.
     """
     super(GlobalQueueManager, self).__init__()
     self.zk_client = zk_client
-    self.db_access = db_access
     zk_client.ensure_path('/appscale/projects')
     zk_client.ChildrenWatch('/appscale/projects', self._update_projects_watch)
 
@@ -180,8 +180,7 @@ class GlobalQueueManager(dict):
 
     for project_id in new_project_list:
       if project_id not in self:
-        self[project_id] = ProjectQueueManager(self.zk_client, self.db_access,
-                                               project_id)
+        self[project_id] = ProjectQueueManager(self.zk_client, project_id)
 
       # Handle changes that happen between watches.
       self[project_id].ensure_watch()

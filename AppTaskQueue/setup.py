@@ -12,13 +12,15 @@ setup(
   platforms='Posix',
   install_requires=[
     'appscale-common',
-    'cassandra-driver',
+    'cassandra-driver<3.18.0',
     'celery>=3.1,<4.0.0',
     'eventlet==0.22',
     'kazoo',
     'mock',
+    'protobuf',
     'psycopg2-binary',
-    'PyYaml',
+    'PyYaml>=4.2b1',
+    'requests',
     'tornado==4.2.0'
   ],
   extras_require={'celery_gui': ['flower']},
@@ -30,7 +32,12 @@ setup(
     'Programming Language :: Python :: 2.7',
   ],
   namespace_packages=['appscale'],
-  packages=['appscale', 'appscale.taskqueue', 'appscale.taskqueue.brokers'],
+  packages=[
+    'appscale',
+    'appscale.taskqueue',
+    'appscale.taskqueue.brokers',
+    'appscale.taskqueue.protocols'
+  ],
   entry_points={
     'console_scripts': [
       'appscale-taskqueue=appscale.taskqueue.appscale_taskqueue:main'

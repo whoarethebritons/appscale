@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import time
 import unittest
 import urllib2
 
@@ -13,6 +14,7 @@ from tornado.options import options
 from tornado.testing import AsyncTestCase
 from tornado.testing import gen_test
 
+from appscale.admin.instance_manager.constants import START_APP_TIMEOUT
 from appscale.admin.instance_manager import (
   instance_manager as instance_manager_module)
 from appscale.admin.instance_manager import InstanceManager
@@ -34,6 +36,7 @@ if not hasattr(options, 'private_ip'):
   options.define('private_ip', '<private_ip>')
 
 options.define('db_proxy', '<private_ip>')
+options.define('load_balancer_ip', '<private_ip>')
 options.define('tq_proxy', '<private_ip>')
 
 
@@ -44,7 +47,8 @@ class TestInstanceManager(AsyncTestCase):
 
     version_details = {'runtime': 'python27',
                        'revision': 1,
-                       'deployment': {'zip': {'sourceUrl': 'source.tar.gz'}}}
+                       'deployment': {'zip': {'sourceUrl': 'source.tar.gz'}},
+                       'appscaleExtensions': {'httpPort': '8080'}}
     version_manager = flexmock(version_details=version_details,
                                project_id='test',
                                revision_key='test_default_v1_1',
@@ -113,7 +117,8 @@ class TestInstanceManager(AsyncTestCase):
 
     version_details = {'runtime': 'java',
                        'revision': 1,
-                       'deployment': {'zip': {'sourceUrl': 'source.tar.gz'}}}
+                       'deployment': {'zip': {'sourceUrl': 'source.tar.gz'}},
+                       'appscaleExtensions': {'httpPort': '8080'}}
     version_manager = flexmock(version_details=version_details,
                                project_id='test',
                                revision_key='test_default_v1_1',
@@ -192,7 +197,8 @@ class TestInstanceManager(AsyncTestCase):
   def test_start_app_failed_copy_java(self):
     version_details = {'runtime': 'java',
                        'revision': 1,
-                       'deployment': {'zip': {'sourceUrl': 'source.tar.gz'}}}
+                       'deployment': {'zip': {'sourceUrl': 'source.tar.gz'}},
+                       'appscaleExtensions': {'httpPort': '8080'}}
     version_manager = flexmock(version_details=version_details,
                                project_id='test',
                                revision_key='test_default_v1_1',
@@ -230,7 +236,8 @@ class TestInstanceManager(AsyncTestCase):
 
   def test_create_java_app_env(self):
     deployment_config = flexmock(get_config=lambda x: {})
-    env_vars = instance.create_java_app_env(deployment_config)
+    env_vars = instance.create_java_app_env(deployment_config, 'java',
+                                            'guestbook')
     assert 'appscale' in env_vars['APPSCALE_HOME']
 
   def test_create_java_start_cmd(self):
@@ -241,7 +248,8 @@ class TestInstanceManager(AsyncTestCase):
     max_heap = 260
     pidfile = 'testpid'
     cmd = instance.create_java_start_cmd(
-      app_id, '20000', '127.0.0.2', max_heap, pidfile, revision_key, 19999)
+      app_id, '20000', '8080', '127.0.0.2', max_heap, pidfile, revision_key,
+      19999, 'java')
     assert app_id in cmd
 
   @gen_test
@@ -310,7 +318,8 @@ class TestInstanceManager(AsyncTestCase):
     ip = '127.0.0.1'
     testing.disable_logging()
     fake_opener = flexmock(
-      open=lambda opener: flexmock(code=200, headers=flexmock(headers=[])))
+      open=lambda url, timeout: flexmock(code=200,
+                                         headers=flexmock(headers=[])))
     flexmock(urllib2).should_receive('build_opener').and_return(fake_opener)
     flexmock(appscale_info).should_receive('get_private_ip').and_return(ip)
 
@@ -320,6 +329,9 @@ class TestInstanceManager(AsyncTestCase):
     instance_started = yield instance_manager._wait_for_app(port)
     self.assertEqual(True, instance_started)
 
+    current_time = time.time()
+    flexmock(time).should_receive('time').and_return(current_time).\
+      and_return(current_time + START_APP_TIMEOUT + 1)
     response = Future()
     response.set_result(None)
     flexmock(gen).should_receive('sleep').and_return(response)

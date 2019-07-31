@@ -168,7 +168,7 @@ CONFIG
                   '--background',
                   '--make-pidfile',
                   '--pidfile', pidfile,
-                  '--startas', "#{bash} -- -c '#{bash_exec}'"]
+                  '--startas', "#{bash} -- -c 'unset \"${!MONIT_@}\"; #{bash_exec}'"]
 
     stop_cmd = "#{start_stop_daemon} --stop --pidfile #{pidfile} " \
                "--retry=TERM/20/KILL/5 && #{rm} #{pidfile}"
@@ -193,8 +193,8 @@ BOO
   end
 
   def self.is_running?(watch)
-    output = run_cmd("#{MONIT} summary | grep #{watch} | grep -E "\
-                     '"(Running|Initializing)"')
+    output = run_cmd("#{MONIT} summary | grep \"'#{watch}'\" | grep -E "\
+                     '"(Running|Initializing|OK)"')
     (output != '')
   end
 
@@ -233,6 +233,23 @@ BOO
     appservers
   end
 
+
+  # This function returns a list of running xmpp services.
+  # Returns:
+  #   A list of xmpp-app records.
+  def self.running_xmpp
+    output = run_cmd("#{MONIT} summary | grep -E 'xmpp-.*(Running|Initializing)'")
+    xmpp_entries = []
+    output.each_line { |monit_entry|
+      match = monit_entry.match(/xmpp-(.*)'\s/)
+      next if match.nil?
+      xmpp_entries << match.captures.first
+    }
+
+    Djinn.log_debug("Found these xmpp processes running: #{xmpp_entries}.")
+    xmpp_entries
+  end
+
   def self.run_cmd(cmd, sleep = false)
     output = ''
     MONIT_LOCK.synchronize {
@@ -244,3 +261,4 @@ BOO
     output
   end
 end
+

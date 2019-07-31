@@ -6,6 +6,7 @@ install_requires = [
   'appscale-common',
   'jsonschema',
   'kazoo',
+  'idna>=2.5,<2.8',  # Required for requests.
   'psutil',
   'PyYaml',
   'requests-unixsocket',
@@ -20,7 +21,7 @@ if sys.version_info < (3,):
 
 setup(
   name='appscale-admin',
-  version='0.0.3',
+  version='0.0.5',
   description='An implementation of the Google App Engine Admin API',
   author='AppScale Systems, Inc.',
   url='https://github.com/AppScale/appscale',
@@ -38,8 +39,10 @@ setup(
   namespace_packages=['appscale'],
   packages=['appscale',
             'appscale.admin',
-            'appscale.admin.instance_manager'],
-  package_data={'': ['*.json']},
+            'appscale.admin.instance_manager',
+            'appscale.admin.routing'],
+  package_data={'': ['*.json'],
+                'appscale.admin.routing': ['templates/*']},
   include_package_data=True,
   entry_points={'console_scripts': [
     'appscale-admin=appscale.admin:main',

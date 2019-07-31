@@ -3,15 +3,15 @@ import datetime
 import itertools
 import logging
 import md5
-import random
 import sys
-import time
+import uuid
 
 from tornado import gen
 from tornado.ioloop import IOLoop
 
 from appscale.datastore import dbconstants, helper_functions
 
+from appscale.common.datastore_index import DatastoreIndex, merge_indexes
 from appscale.common.unpackaged import APPSCALE_PYTHON_APPSERVER
 from kazoo.client import KazooState
 from appscale.datastore.dbconstants import (
@@ -25,7 +25,9 @@ from appscale.datastore.cassandra_env.entity_id_allocator import ScatteredAlloca
 from appscale.datastore.cassandra_env.large_batch import BatchNotApplied
 from appscale.datastore.cassandra_env.utils import deletions_for_entity
 from appscale.datastore.cassandra_env.utils import mutations_for_entity
+from appscale.datastore.index_manager import IndexInaccessible
 from appscale.datastore.taskqueue_client import EnqueueError, TaskQueueClient
+from appscale.datastore.utils import _FindIndexToUse
 from appscale.datastore.utils import clean_app_id
 from appscale.datastore.utils import decode_path
 from appscale.datastore.utils import encode_entity_table_key
@@ -146,6 +148,7 @@ class DatastoreDistributed():
 
     self.taskqueue_client = TaskQueueClient(taskqueue_locations)
     self.transaction_manager = transaction_manager
+    self.index_manager = None
     self.zookeeper.handle.add_listener(self._zk_state_listener)
 
   def get_limit(self, query):
@@ -154,21 +157,36 @@ class DatastoreDistributed():
     Args:
       query: A datastore_pb.Query.
     Returns:
-      An int, the limit to be used when accessing the datastore.
+      A tuple containing the number of entities the datastore should retrieve
+      and a boolean indicating whether or not the datastore should check for
+      results beyond what it returns.
     """
-    limit = self._MAXIMUM_RESULTS
-    if query.has_count():
-      limit = min(query.count(), self._MAXIMUM_RESULTS)
-
+    # The datastore should check for more results beyond what it returns when
+    # the current request is not able to satisfy the full query. This can
+    # happen during batch queries if "count" is less than the full query's
+    # limit. It can also happen when the limit is greater than the maximum
+    # results that the datastore returns per request.
+    check_more_results = False
+    limit = None
     if query.has_limit():
-      limit = min(query.limit(), limit)
+      limit = query.limit()
+
+    if query.has_count() and (limit is None or limit > query.count()):
+      check_more_results = True
+      limit = query.count()
+
+    if limit is None or limit > self._MAXIMUM_RESULTS:
+      check_more_results = True
+      limit = self._MAXIMUM_RESULTS
 
     if query.has_offset():
-      limit = limit + min(query.offset(), self._MAXIMUM_RESULTS)
+      limit += query.offset()
+
     # We can not scan with 0 or less, hence we set it to one.
     if limit <= 0:
       limit = 1
-    return limit
+
+    return limit, check_more_results
 
   @staticmethod
   def __decode_index_str(value, prop_value):
@@ -395,12 +413,13 @@ class DatastoreDistributed():
       index: A entity_pb.CompositeIndex object.
     """
     self.logger.info('Deleting composite index:\n{}'.format(index))
-    index_keys = []
-    composite_id = str(index.id())
-    index_keys.append(self._SEPARATOR.join([app_id, 'index', composite_id]))
-    yield self.datastore_batch.batch_delete(
-      dbconstants.METADATA_TABLE, index_keys,
-      column_names=dbconstants.METADATA_TABLE)
+    try:
+      project_index_manager = self.index_manager.projects[app_id]
+    except KeyError:
+      raise BadRequest('project_id: {} not found'.format(app_id))
+
+    # TODO: Remove actual index entries.
+    project_index_manager.delete_index_definition(index.id())
 
   @gen.coroutine
   def create_composite_index(self, app_id, index):
@@ -412,18 +431,12 @@ class DatastoreDistributed():
     Returns:
       A unique number representing the composite index ID.
     """
-    # Generate a random number based on time of creation.
-    rand = int(str(int(time.time())) + str(random.randint(0, 999999)))
-    index.set_id(rand)
-    encoded_entity = index.Encode()
-    row_key = self._SEPARATOR.join([app_id, 'index', str(rand)])
-    row_keys = [row_key]
-    row_values = {}
-    row_values[row_key] = {dbconstants.METADATA_SCHEMA[0]: encoded_entity}
-    yield self.datastore_batch.batch_put_entity(
-      dbconstants.METADATA_TABLE, row_keys,
-      dbconstants.METADATA_SCHEMA, row_values)
-    raise gen.Return(rand)
+    new_index = DatastoreIndex.from_pb(index)
+
+    # The ID must be a positive number that fits in a signed 64-bit int.
+    new_index.id = uuid.uuid1().int >> 65
+    merge_indexes(self.zookeeper.handle, app_id, [new_index])
+    raise gen.Return(new_index.id)
 
   @gen.coroutine
   def update_composite_index(self, app_id, index):
@@ -538,16 +551,17 @@ class DatastoreDistributed():
       yield allocator.set_min_counter(counter)
 
   @gen.coroutine
-  def put_entities(self, app, entities, composite_indexes=()):
+  def put_entities(self, app, entities):
     """ Updates indexes of existing entities, inserts new entities and
         indexes for them.
 
     Args:
       app: A string containing the application ID.
       entities: List of entities.
-      composite_indexes: A list or tuple of CompositeIndex objects.
     """
     self.logger.debug('Inserting {} entities'.format(len(entities)))
+
+    composite_indexes = self.get_indexes(app)
 
     by_group = {}
     for entity in entities:
@@ -705,8 +719,7 @@ class DatastoreDistributed():
       yield self.datastore_batch.put_entities_tx(
         app_id, put_request.transaction().handle(), entities)
     else:
-      yield self.put_entities(
-        app_id, entities, put_request.composite_index_list())
+      yield self.put_entities(app_id, entities)
       self.logger.debug('Updated {} entities'.format(len(entities)))
 
     put_response.key_list().extend([e.key() for e in entities])
@@ -912,21 +925,8 @@ class DatastoreDistributed():
       if last_path.type() not in ent_kinds:
         ent_kinds.append(last_path.type())
 
-    # We use the marked changes field to signify if we should
-    # look up composite indexes because delete request do not
-    # include that information.
-    composite_indexes = []
-    filtered_indexes = []
-    if delete_request.has_mark_changes():
-      all_composite_indexes = yield self.datastore_batch.get_indices(app_id)
-      for index in all_composite_indexes:
-        new_index = entity_pb.CompositeIndex()
-        new_index.ParseFromString(index)
-        composite_indexes.append(new_index)
-      # Only get composites of the correct kinds.
-      for index in composite_indexes:
-        if index.definition().entity_type() in ent_kinds:
-          filtered_indexes.append(index)
+    filtered_indexes = [index for index in self.get_indexes(app_id)
+                        if index.definition().entity_type() in ent_kinds]
 
     if delete_request.has_transaction():
       txid = delete_request.transaction().handle()
@@ -1269,7 +1269,8 @@ class DatastoreDistributed():
       query: The query to run.
       filter_info: Tuple with filter operators and values.
     Returns:
-      A list of entities.
+      A tuple containing a list of entities and a boolean indicating if there
+      are more results for the query.
     Raises:
       ZKTransactionException: If a lock could not be acquired.
     """
@@ -1311,10 +1312,15 @@ class DatastoreDistributed():
       if query.compiled_cursor().position_list()[0].start_inclusive() == 1:
         start_inclusive = self._ENABLE_INCLUSIVITY
 
-    if startrow > endrow:
-      raise gen.Return([])
+    more_results = False
 
-    limit = self.get_limit(query)
+    if startrow > endrow:
+      raise gen.Return(([], more_results))
+
+    request_limit, check_more_results = self.get_limit(query)
+    fetch_count = request_limit
+    if check_more_results:
+      fetch_count += 1
 
     entities = []
     while True:
@@ -1323,7 +1329,7 @@ class DatastoreDistributed():
         APP_ENTITY_SCHEMA,
         startrow,
         endrow,
-        limit,
+        fetch_count,
         start_inclusive=start_inclusive,
         end_inclusive=end_inclusive)
 
@@ -1334,10 +1340,10 @@ class DatastoreDistributed():
       else:
         entities.extend([result.values()[0]['entity'] for result in results])
 
-      if len(results) < limit:
+      if len(results) < fetch_count:
         break
 
-      if len(entities) >= limit:
+      if len(entities) >= fetch_count:
         break
 
       # TODO: This can be made more efficient by skipping ahead to the next
@@ -1349,7 +1355,10 @@ class DatastoreDistributed():
       yield self.datastore_batch.record_reads(
         query.app(), query.transaction().handle(), [group_for_key(ancestor)])
 
-    raise gen.Return(entities[:limit])
+    if check_more_results and len(entities) > request_limit:
+      more_results = True
+
+    raise gen.Return((entities[:request_limit], more_results))
 
   @gen.coroutine
   def fetch_from_entity_table(self,
@@ -1417,7 +1426,8 @@ class DatastoreDistributed():
       query: The query to run.
       filter_info: Tuple with filter operators and values.
     Returns:
-      Entities that match the query.
+      A tuple containing entities that match the query and a boolean indicating
+      if there are more results for the query.
     """
     prefix = self.get_table_prefix(query)
 
@@ -1457,11 +1467,20 @@ class DatastoreDistributed():
       if query.compiled_cursor().position_list()[0].start_inclusive() == 1:
         start_inclusive = self._ENABLE_INCLUSIVITY
 
-    limit = self.get_limit(query)
+    more_results = False
+    request_limit, check_more_results = self.get_limit(query)
+    fetch_count = request_limit
+    if check_more_results:
+      fetch_count += 1
+
     result = yield self.fetch_from_entity_table(
-      startrow, endrow, limit, offset=0, start_inclusive=start_inclusive,
+      startrow, endrow, fetch_count, offset=0, start_inclusive=start_inclusive,
       end_inclusive=end_inclusive, query=query, txn_id=0)
-    raise gen.Return(result)
+
+    if check_more_results and len(result) > request_limit:
+      more_results = True
+
+    raise gen.Return((result[:request_limit], more_results))
 
   def reverse_path(self, key):
     """ Use this function for reversing the key ancestry order.
@@ -1554,27 +1573,32 @@ class DatastoreDistributed():
       filter_info: tuple with filter operators and values.
       order_info: tuple with property name and the sort order.
     Returns:
-      An ordered list of entities matching the query.
+      A tuple containing an ordered list of entities matching the query and a
+      boolean indicating if there are more results for the query.
     Raises:
       AppScaleDBError: An infinite loop is detected when fetching references.
     """
     self.logger.debug('Kind Query:\n{}'.format(query))
+
+    more_results = False
+
     filter_info = self.remove_exists_filters(filter_info)
     # Detect quickly if this is a kind query or not.
     for fi in filter_info:
       if fi != "__key__":
-        return
+        raise gen.Return((None, more_results))
 
     if query.has_ancestor():
       if len(order_info) > 0:
-        raise BadRequest('Ordered ancestor queries require an index')
+        # Ordered ancestor queries require an index.
+        raise gen.Return((None, more_results))
 
-      result = yield self.ancestor_query(query, filter_info)
-      raise gen.Return(result)
+      result, more_results = yield self.ancestor_query(query, filter_info)
+      raise gen.Return((result, more_results))
 
     if not query.has_kind():
-      result = yield self.kindless_query(query, filter_info)
-      raise gen.Return(result)
+      result, more_results = yield self.kindless_query(query, filter_info)
+      raise gen.Return((result, more_results))
 
     if query.kind().startswith("__") and query.kind().endswith("__"):
       # Use the default namespace for metadata queries.
@@ -1583,7 +1607,7 @@ class DatastoreDistributed():
     startrow, endrow, start_inclusive, end_inclusive = \
       self.kind_query_range(query, filter_info, order_info)
     if startrow is None or endrow is None:
-      return
+      raise gen.Return((None, more_results))
 
     if query.has_compiled_cursor() and query.compiled_cursor().position_size():
       cursor = appscale_stub_util.ListCursor(query)
@@ -1594,15 +1618,19 @@ class DatastoreDistributed():
       if query.compiled_cursor().position_list()[0].start_inclusive() == 1:
         start_inclusive = self._ENABLE_INCLUSIVITY
 
-    limit = self.get_limit(query)
+    request_limit, check_more_results = self.get_limit(query)
+    fetch_count = request_limit
+    if check_more_results:
+      fetch_count += 1
+
     if startrow > endrow:
-      raise gen.Return([])
+      raise gen.Return(([], more_results))
 
     # Since the validity of each reference is not checked until after the
     # range query has been performed, we may need to fetch additional
     # references in order to satisfy the query.
     entities = []
-    current_limit = limit
+    current_limit = fetch_count
     while True:
       references = yield self.datastore_batch.range_query(
         dbconstants.APP_KIND_TABLE,
@@ -1619,7 +1647,7 @@ class DatastoreDistributed():
       entities.extend(new_entities)
 
       # If we have enough valid entities to satisfy the query, we're done.
-      if len(entities) >= limit:
+      if len(entities) >= fetch_count:
         break
 
       # If we received fewer references than we asked for, they are exhausted.
@@ -1651,14 +1679,17 @@ class DatastoreDistributed():
     if query.kind() == "__namespace__":
       entities = [self.default_namespace()] + entities
 
-    results = entities[:limit]
+    if check_more_results and len(entities) > request_limit:
+      more_results = True
+
+    results = entities[:request_limit]
 
     # Handle projection queries.
     if query.property_name_size() > 0:
       results = self.remove_extra_props(query, results)
 
     self.logger.debug('Returning {} entities'.format(len(results)))
-    raise gen.Return(results)
+    raise gen.Return((results, more_results))
 
   def remove_exists_filters(self, filter_info):
     """ Remove any filters that have EXISTS filters.
@@ -1707,7 +1738,8 @@ class DatastoreDistributed():
       filter_info: tuple with filter operators and values.
       order_info: tuple with property name and the sort order.
     Returns:
-      List of entities retrieved from the given query.
+      A tuple containing a list of entities retrieved from the given query and
+      a boolean indicating if there are more results for the query.
     """
     self.logger.debug('Single Property Query:\n{}'.format(query))
     if query.kind().startswith("__") and \
@@ -1715,13 +1747,15 @@ class DatastoreDistributed():
       # Use the default namespace for metadata queries.
       query.set_name_space("")
 
+    more_results = False
+
     filter_info = self.remove_exists_filters(filter_info)
     ancestor = None
     property_names = set(filter_info.keys())
     property_names.update(x[0] for x in order_info)
     property_names.discard('__key__')
     if len(property_names) != 1:
-      return
+      raise gen.Return((None, more_results))
 
     property_name = property_names.pop()
     potential_filter_ops = filter_info.get(property_name, [])
@@ -1733,20 +1767,20 @@ class DatastoreDistributed():
       query.filter_list())
 
     if len(order_info) > 1 or (order_info and order_info[0][0] == '__key__'):
-      return
+      raise gen.Return((None, more_results))
 
     # If there is an ancestor in the query, any filtering must be within a
     # single value when using a single-prop index.
     spans_multiple_values = order_info or (
       filter_ops and filter_ops[0][0] != datastore_pb.Query_Filter.EQUAL)
     if query.has_ancestor() and spans_multiple_values:
-      return
+      raise gen.Return((None, more_results))
 
     if query.has_ancestor():
       ancestor = query.ancestor()
 
     if not query.has_kind():
-      return
+      raise gen.Return((None, more_results))
 
     if order_info and order_info[0][0] == property_name:
       direction = order_info[0][1]
@@ -1755,7 +1789,7 @@ class DatastoreDistributed():
 
     prefix = self.get_table_prefix(query)
 
-    limit = self.get_limit(query)
+    request_limit, check_more_results = self.get_limit(query)
 
     if query.has_compiled_cursor() and query.compiled_cursor().position_size():
       cursor = appscale_stub_util.ListCursor(query)
@@ -1773,7 +1807,11 @@ class DatastoreDistributed():
     # range query has been performed, we may need to fetch additional
     # references in order to satisfy the query.
     entities = []
-    current_limit = limit
+    fetch_count = request_limit
+    if check_more_results:
+      fetch_count += 1
+
+    current_limit = fetch_count
     while True:
       references = yield self.__apply_filters(
         filter_ops, order_info, property_name, query.kind(), prefix,
@@ -1801,7 +1839,7 @@ class DatastoreDistributed():
       entities.extend(new_entities)
 
       # If we have enough valid entities to satisfy the query, we're done.
-      if len(entities) >= limit:
+      if len(entities) >= fetch_count:
         break
 
       # If we received fewer references than we asked for, they are exhausted.
@@ -1829,7 +1867,10 @@ class DatastoreDistributed():
         raise dbconstants.AppScaleDBError(
           'An infinite loop was detected while fetching references.')
 
-    results = entities[:limit]
+    if check_more_results and len(entities) > request_limit:
+      more_results = True
+
+    results = entities[:request_limit]
 
     # Handle projection queries.
     # TODO: When the index has been confirmed clean, use those values directly.
@@ -1837,7 +1878,7 @@ class DatastoreDistributed():
       results = self.remove_extra_props(query, results)
 
     self.logger.debug('Returning {} results'.format(len(results)))
-    raise gen.Return(results)
+    raise gen.Return((results, more_results))
 
   @gen.coroutine
   def __apply_filters(self,
@@ -2130,15 +2171,21 @@ class DatastoreDistributed():
 
   @staticmethod
   @gen.coroutine
-  def _common_refs_from_ranges(ranges, limit):
+  def _common_refs_from_ranges(ranges, limit, path=None):
     """ Find common entries across multiple index ranges.
 
     Args:
       ranges: A list of RangeIterator objects.
       limit: An integer specifying the maximum number of references to find.
+      path: An entity_pb.Path object that restricts the query to a single key.
     Returns:
       A dictionary mapping entity references to index entries.
     """
+    if path is not None:
+      limit = 1
+      for range_ in ranges:
+        range_.set_cursor(path, inclusive=True)
+
     reference_hash = {}
     min_common_path = ranges[0].get_cursor()
     entries_exhausted = False
@@ -2203,21 +2250,44 @@ class DatastoreDistributed():
         operators and values.
       order_info: tuple with property name and the sort order.
     Returns:
-      List of entities retrieved from the given query.
+      A tuple containing a list of entities retrieved from the given query and
+      a boolean indicating whether there are more results for the query.
     """
     self.logger.debug('ZigZag Merge Join Query:\n{}'.format(query))
+    more_results = False
+
     if not self.is_zigzag_merge_join(query, filter_info, order_info):
-      return
+      raise gen.Return((None, more_results))
+
     kind = query.kind()
-    limit = self.get_limit(query)
+    request_limit, check_more_results = self.get_limit(query)
+    fetch_count = request_limit
+    if check_more_results:
+      fetch_count += 1
+
     app_id = clean_app_id(query.app())
 
     # We only use references from the ascending property table.
     direction = datastore_pb.Query_Order.ASCENDING
 
+    prop_filters = [filter_ for filter_ in query.filter_list()
+                    if filter_.property(0).name() != '__key__']
     ranges = [RangeIterator.from_filter(self.datastore_batch, app_id,
                                         query.name_space(), kind, filter_)
-              for filter_ in query.filter_list()]
+              for filter_ in prop_filters]
+
+    # Check if the query is restricted to a single key.
+    path = None
+    key_filters = [filter_ for filter_ in query.filter_list()
+                   if filter_.property(0).name() == '__key__']
+    if len(key_filters) > 1:
+      raise BadRequest('Queries can only specify one key')
+
+    if key_filters:
+      path = entity_pb.Path()
+      ref_val = key_filters[0].property(0).value().referencevalue()
+      for element in ref_val.pathelement_list():
+        path.add_element().MergeFrom(element)
 
     if query.has_ancestor():
       for range_ in ranges:
@@ -2231,49 +2301,39 @@ class DatastoreDistributed():
 
     entities = []
     while True:
-      reference_hash = yield self._common_refs_from_ranges(ranges, limit)
+      reference_hash = yield self._common_refs_from_ranges(
+        ranges, fetch_count, path)
       new_entities = yield self.__fetch_and_validate_entity_set(
-        reference_hash, limit, app_id, direction)
+        reference_hash, fetch_count, app_id, direction)
       entities.extend(new_entities)
 
       # If there are enough entities to satisfy the query, stop fetching.
-      if len(entities) >= limit:
+      if len(entities) >= fetch_count:
         break
 
       # If there weren't enough common references to fulfill the limit, the
       # references are exhausted.
-      if len(reference_hash) < limit:
+      if len(reference_hash) < fetch_count:
         break
 
-    results = entities[:limit]
+    if check_more_results and len(entities) > request_limit:
+      more_results = True
+
+    results = entities[:request_limit]
     self.logger.debug('Returning {} results'.format(len(results)))
-    raise gen.Return(results)
+    raise gen.Return((results, more_results))
 
-  def does_composite_index_exist(self, query):
-    """ Checks to see if the query has a composite index that can implement
-    the given query.
-
-    Args:
-      query: A datastore_pb.Query.
-    Returns:
-      True if the composite exists, False otherwise.
-    """
-    return query.composite_index_size() > 0
-
-  def get_range_composite_query(self, query, filter_info):
+  def get_range_composite_query(self, query, filter_info, composite_index):
     """ Gets the start and end key of a composite query.
 
     Args:
       query: A datastore_pb.Query object.
       filter_info: A dictionary mapping property names to tuples of filter
         operators and values.
-      composite_id: An int, the composite index ID,
+      composite_index: An entity_pb.CompositeIndex object.
     Returns:
       A tuple of strings, the start and end key for the composite table.
     """
-    start_key = ''
-    end_key = ''
-    composite_index = query.composite_index_list()[0]
     index_id = composite_index.id()
     definition = composite_index.definition()
     app_id = clean_app_id(query.app())
@@ -2465,7 +2525,7 @@ class DatastoreDistributed():
     return start_key, end_key
 
   @gen.coroutine
-  def composite_v2(self, query, filter_info):
+  def composite_v2(self, query, filter_info, composite_index):
     """Performs composite queries using a range query against
        the composite table. Faster than in-memory filters, but requires
        indexes to be built upon each put.
@@ -2474,17 +2534,24 @@ class DatastoreDistributed():
       query: The query to run.
       filter_info: dictionary mapping property names to tuples of
         filter operators and values.
+      composite_index: An entity_pb.CompositeIndex object to use for the query.
     Returns:
-      List of entities retrieved from the given query.
+      A tuple containing a list of entities retrieved from the given query and
+      a boolean indicating if there are more results for the query.
     """
     self.logger.debug('Composite Query:\n{}'.format(query))
+
+    if composite_index.state() != entity_pb.CompositeIndex.READ_WRITE:
+      raise dbconstants.NeedsIndex(
+        'The relevant composite index has not finished building')
+
     start_inclusive = True
-    startrow, endrow = self.get_range_composite_query(query, filter_info)
+    startrow, endrow = self.get_range_composite_query(query, filter_info,
+                                                      composite_index)
     # Override the start_key with a cursor if given.
     if query.has_compiled_cursor() and query.compiled_cursor().position_size():
       cursor = appscale_stub_util.ListCursor(query)
       last_result = cursor._GetLastResult()
-      composite_index = query.composite_index_list()[0]
 
       startrow = self.get_composite_index_key(composite_index, last_result,
         position_list=query.compiled_cursor().position_list(),
@@ -2497,24 +2564,28 @@ class DatastoreDistributed():
       end_compiled_cursor = query.end_compiled_cursor()
       list_cursor = appscale_stub_util.ListCursor(query)
       last_result, _ = list_cursor._DecodeCompiledCursor(end_compiled_cursor)
-      composite_index = query.composite_index_list()[0]
       endrow = self.get_composite_index_key(composite_index, last_result,
         position_list=end_compiled_cursor.position_list(),
         filters=query.filter_list())
 
     table_name = dbconstants.COMPOSITE_TABLE
     column_names = dbconstants.COMPOSITE_SCHEMA
-    limit = self.get_limit(query)
+
+    more_results = False
+    request_limit, check_more_results = self.get_limit(query)
+    fetch_count = request_limit
+    if check_more_results:
+      fetch_count += 1
 
     if startrow > endrow:
-      raise gen.Return([])
+      raise gen.Return(([], more_results))
 
     # TODO: Check if we should do this for other comparisons.
     multiple_equality_filters = self.__get_multiple_equality_filters(
       query.filter_list())
 
     entities = []
-    current_limit = limit
+    current_limit = fetch_count
     while True:
       references = yield self.datastore_batch.range_query(
         table_name, column_names, startrow, endrow, current_limit,
@@ -2523,7 +2594,7 @@ class DatastoreDistributed():
       # This is a projection query.
       if query.property_name_size() > 0:
         potential_entities = self._extract_entities_from_composite_indexes(
-          query, references)
+          query, references, composite_index)
       else:
         potential_entities = yield self.__fetch_entities(references)
 
@@ -2536,7 +2607,7 @@ class DatastoreDistributed():
       entities.extend(potential_entities)
 
       # If we have enough valid entities to satisfy the query, we're done.
-      if len(entities) >= limit:
+      if len(entities) >= fetch_count:
         break
 
       # If we received fewer references than we asked for, they are exhausted.
@@ -2564,9 +2635,12 @@ class DatastoreDistributed():
         raise dbconstants.AppScaleDBError(
           'An infinite loop was detected while fetching references.')
 
-    results = entities[:limit]
+    if check_more_results and len(entities) > request_limit:
+      more_results = True
+
+    results = entities[:request_limit]
     self.logger.debug('Returning {} results'.format(len(results)))
-    raise gen.Return(results)
+    raise gen.Return((results, more_results))
 
   def __get_multiple_equality_filters(self, filter_list):
     """ Returns filters from the query that contain multiple equality
@@ -2760,7 +2834,8 @@ class DatastoreDistributed():
 
     return cleaned_results
 
-  def _extract_entities_from_composite_indexes(self, query, index_result):
+  def _extract_entities_from_composite_indexes(self, query, index_result,
+                                               composite_index):
     """ Takes index values and creates partial entities out of them.
 
     This is required for projection queries where the query specifies certain
@@ -2772,10 +2847,11 @@ class DatastoreDistributed():
     Args:
       query: A datastore_pb.Query object.
       index_result: A list of index strings.
+      composite_index: An entity_pb.CompositeIndex object.
     Returns:
       A list of EntityProtos.
     """
-    definition = query.composite_index_list()[0].definition()
+    definition = composite_index.definition()
     prop_name_list = query.property_name_list()
 
     distinct_checker = []
@@ -2850,28 +2926,6 @@ class DatastoreDistributed():
       distinct_checker.append(distinct_str)
     return entities
 
-  @gen.coroutine
-  def __composite_query(self, query, filter_info, _):
-    """Performs Composite queries which is a combination of
-       multiple properties to query on.
-
-    Args:
-      query: The query to run.
-      filter_info: dictionary mapping property names to tuples of
-        filter operators and values.
-    Returns:
-      List of entities retrieved from the given query.
-    """
-    if self.does_composite_index_exist(query):
-      result = yield self.composite_v2(query, filter_info)
-      raise gen.Return(result)
-
-    self.logger.error('No composite ID was found for query:\n{}.'.
-      format(query))
-    raise apiproxy_errors.ApplicationError(
-      datastore_pb.Error.NEED_INDEX,
-      'No composite index provided')
-
   # These are the three different types of queries attempted. Queries
   # can be identified by their filters and orderings.
   # TODO: Queries have hints which help in picking which strategy to do first.
@@ -2917,18 +2971,20 @@ class DatastoreDistributed():
     filter_info = self.generate_filter_info(filters)
     order_info = self.generate_order_info(orders)
 
-    # We do the composite check first because its easy to determine if a query
-    # has a composite index.
-    if query.composite_index_size() > 0:
-      result = yield self.__composite_query(query, filter_info, order_info)
-      raise gen.Return(result)
+    index_to_use = _FindIndexToUse(query, self.get_indexes(app_id))
+    if index_to_use is not None:
+      result, more_results = yield self.composite_v2(query, filter_info,
+                                                     index_to_use)
+      raise gen.Return((result, more_results))
 
     for strategy in DatastoreDistributed._QUERY_STRATEGIES:
-      results = yield strategy(self, query, filter_info, order_info)
+      results, more_results = yield strategy(self, query, filter_info,
+                                             order_info)
       if results or results == []:
-        raise gen.Return(results)
+        raise gen.Return((results, more_results))
 
-    raise gen.Return([])
+    raise dbconstants.NeedsIndex(
+      'An additional index is required to satisfy the query')
 
   @gen.coroutine
   def _dynamic_run_query(self, query, query_result):
@@ -2939,7 +2995,7 @@ class DatastoreDistributed():
       query: The query to run.
       query_result: The response given to the application server.
     """
-    result = yield self.__get_query_results(query)
+    result, more_results = yield self.__get_query_results(query)
     last_entity = None
     count = 0
     offset = query.offset()
@@ -2956,10 +3012,7 @@ class DatastoreDistributed():
     cur = UnprocessedQueryCursor(query, result, last_entity)
     cur.PopulateQueryResult(count, query.offset(), query_result)
 
-    # If we have less than the amount of entities we request there are no
-    # more results for this query.
-    if count < self.get_limit(query):
-      query_result.set_more_results(False)
+    query_result.set_more_results(more_results)
 
     # If there were no results then we copy the last cursor so future queries
     # can start off from the same place.
@@ -3068,9 +3121,7 @@ class DatastoreDistributed():
       raise dbconstants.TooManyGroupsException(
         'Too many groups in transaction')
 
-    indices = yield self.datastore_batch.get_indices(app)
-    composite_indices = [entity_pb.CompositeIndex(index) for index in indices]
-
+    composite_indices = self.get_indexes(app)
     decoded_groups = [entity_pb.Reference(group) for group in tx_groups]
     self.transaction_manager.set_groups(app, txn, decoded_groups)
 
@@ -3182,38 +3233,6 @@ class DatastoreDistributed():
       IOLoop.current().spawn_callback(self.enqueue_transactional_tasks, app,
                                       metadata['tasks'])
 
-  @gen.coroutine
-  def commit_transaction(self, app_id, http_request_data):
-    """ Handles the commit phase of a transaction.
-
-    Args:
-      app_id: The application ID requesting the transaction commit.
-      http_request_data: The encoded request of datastore_pb.Transaction.
-    Returns:
-      An encoded protocol buffer commit response.
-    """
-    transaction_pb = datastore_pb.Transaction(http_request_data)
-    txn_id = transaction_pb.handle()
-
-    try:
-      yield self.apply_txn_changes(app_id, txn_id)
-    except (dbconstants.TxTimeoutException, dbconstants.Timeout) as timeout:
-      raise gen.Return(('', datastore_pb.Error.TIMEOUT, str(timeout)))
-    except dbconstants.AppScaleDBConnectionError:
-      self.logger.exception('DB connection error during commit')
-      raise gen.Return(
-        ('', datastore_pb.Error.INTERNAL_ERROR,
-         'Datastore connection error on Commit request.'))
-    except dbconstants.ConcurrentModificationException as error:
-      raise gen.Return(
-        ('', datastore_pb.Error.CONCURRENT_TRANSACTION, str(error)))
-    except (dbconstants.TooManyGroupsException,
-            dbconstants.BadRequest) as error:
-      raise gen.Return(('', datastore_pb.Error.BAD_REQUEST, str(error)))
-
-    commitres_pb = datastore_pb.CommitResponse()
-    raise gen.Return((commitres_pb.Encode(), 0, ''))
-
   def rollback_transaction(self, app_id, txid):
     """ Handles the rollback phase of a transaction.
 
@@ -3229,6 +3248,29 @@ class DatastoreDistributed():
       self.zookeeper.notify_failed_transaction(app_id, txid)
     except zktransaction.ZKTransactionException as error:
       raise InternalError(str(error))
+
+  def get_indexes(self, project_id):
+    """ Retrieves list of indexes for a project.
+
+    Args:
+      project_id: A string specifying a project ID.
+    Returns:
+      A list of entity_pb.CompositeIndex objects.
+    Raises:
+      BadRequest if project_id is not found.
+      InternalError if ZooKeeper is not accessible.
+    """
+    try:
+      project_index_manager = self.index_manager.projects[project_id]
+    except KeyError:
+      raise BadRequest('project_id: {} not found'.format(project_id))
+
+    try:
+      indexes = project_index_manager.indexes_pb
+    except IndexInaccessible:
+      raise InternalError('ZooKeeper is not accessible')
+
+    return indexes
 
   def _zk_state_listener(self, state):
     """ Handles changes to the ZooKeeper connection state.

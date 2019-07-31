@@ -19,10 +19,10 @@ from appscale.common import appscale_info
 from appscale.common import constants
 from appscale.common.unpackaged import APPSCALE_PYTHON_APPSERVER
 from appscale.common.unpackaged import DASHBOARD_DIR
-from appscale.taskqueue.distributed_tq import TaskName
 from . import helper_functions
 from .cassandra_env import cassandra_interface
 from .datastore_distributed import DatastoreDistributed
+from .index_manager import IndexManager
 from .utils import get_composite_indexes_rows
 from .zkappscale import zktransaction as zk
 from .zkappscale.entity_lock import EntityLock
@@ -44,6 +44,26 @@ sys.path.append(os.path.join(DASHBOARD_DIR, 'lib'))
 from dashboard_logs import RequestLogLine
 
 logger = logging.getLogger(__name__)
+
+
+class TaskName(db.Model):
+  """ A datastore model for tracking task names in order to prevent
+  tasks with the same name from being enqueued repeatedly.
+
+  Attributes:
+    timestamp: The time the task was enqueued.
+  """
+  STORED_KIND_NAME = "__task_name__"
+  timestamp = db.DateTimeProperty(auto_now_add=True)
+  queue = db.StringProperty(required=True)
+  state = db.StringProperty(required=True)
+  endtime = db.DateTimeProperty()
+  app_id = db.StringProperty(required=True)
+
+  @classmethod
+  def kind(cls):
+    """ Kind name override. """
+    return cls.STORED_KIND_NAME
 
 
 class DatastoreGroomer(threading.Thread):
@@ -127,7 +147,6 @@ class DatastoreGroomer(threading.Thread):
     self.stats = {}
     self.namespace_info = {}
     self.num_deletes = 0
-    self.composite_index_cache = {}
     self.entities_checked = 0
     self.journal_entries_cleaned = 0
     self.index_entries_checked = 0
@@ -210,42 +229,6 @@ class DatastoreGroomer(threading.Thread):
       return False
 
     return True
-
-  def load_composite_cache(self, app_id):
-    """ Load the composite index cache for an application ID.
-
-    Args:
-      app_id: A str, the application ID.
-    Returns:
-      True if the application has composites. False otherwise.
-    """
-    start_key = dbconstants.KEY_DELIMITER.join([app_id, 'index', ''])
-    end_key = dbconstants.KEY_DELIMITER.join(
-      [app_id, 'index', dbconstants.TERMINATING_STRING])
-
-    results = self.db_access.range_query_sync(
-      dbconstants.METADATA_TABLE, dbconstants.METADATA_TABLE,
-      start_key, end_key, dbconstants.MAX_NUMBER_OF_COMPOSITE_INDEXES)
-    list_result = []
-    for list_item in results:
-      for _, value in list_item.iteritems():
-        list_result.append(value['data'])
-
-    self.composite_index_cache[app_id] = self.NO_COMPOSITES
-    kind_index_dictionary = {}
-    for index in list_result:
-      new_index = entity_pb.CompositeIndex()
-      new_index.ParseFromString(index)
-      kind = new_index.definition().entity_type()
-      if kind in kind_index_dictionary:
-        kind_index_dictionary[kind].append(new_index)
-      else:
-        kind_index_dictionary[kind] = [new_index]
-    if kind_index_dictionary:
-      self.composite_index_cache[app_id] = kind_index_dictionary
-      return True
-
-    return False
 
   def fetch_entity_dict_for_references(self, references):
     """ Fetches a dictionary of valid entities for a list of references.
@@ -637,18 +620,13 @@ class DatastoreGroomer(threading.Thread):
     if not kind:
       return []
 
-    if app_id in self.composite_index_cache:
-      if self.composite_index_cache[app_id] == self.NO_COMPOSITES:
-        return []
-      elif kind in self.composite_index_cache[app_id]:
-        return self.composite_index_cache[app_id][kind]
-      else:
-        return []
-    else:
-      if self.load_composite_cache(app_id):
-        if kind in self.composite_index_cache[app_id]:
-          return self.composite_index_cache[kind]
+    try:
+      project_index_manager = self.ds_access.index_manager.projects[app_id]
+    except KeyError:
       return []
+
+    return [index for index in project_index_manager.indexes_pb
+            if index.definition().entity_type() == kind]
 
   def delete_indexes(self, entity):
     """ Deletes indexes for a given entity.
@@ -912,11 +890,11 @@ class DatastoreGroomer(threading.Thread):
     Returns:
       A distributed_datastore.DatastoreDistributed object.
     """
-    ds_distributed = datastore_distributed.DatastoreDistributed(app_id,
-      self.datastore_path, require_indexes=False)
+    ds_distributed = datastore_distributed.DatastoreDistributed(
+      app_id, self.datastore_path)
     apiproxy_stub_map.apiproxy.RegisterStub('datastore_v3', ds_distributed)
     apiproxy_stub_map.apiproxy.RegisterStub('memcache',
-      memcache_distributed.MemcacheService())
+      memcache_distributed.MemcacheService(app_id))
     os.environ['APPLICATION_ID'] = app_id
     os.environ['APPNAME'] = app_id
     os.environ['AUTH_DOMAIN'] = "appscale.com"
@@ -1079,12 +1057,13 @@ class DatastoreGroomer(threading.Thread):
     transaction_manager = TransactionManager(self.zoo_keeper.handle)
     self.ds_access = DatastoreDistributed(
       self.db_access, transaction_manager, zookeeper=self.zoo_keeper)
+    index_manager = IndexManager(self.zoo_keeper.handle, self.ds_access)
+    self.ds_access.index_manager = index_manager
 
     logger.info("Groomer started")
     start = time.time()
 
     self.reset_statistics()
-    self.composite_index_cache = {}
 
     clean_indexes = [
       {
@@ -1169,7 +1148,7 @@ class DatastoreGroomer(threading.Thread):
 
     self.update_groomer_state([])
 
-    timestamp = datetime.datetime.utcnow()
+    timestamp = datetime.datetime.utcnow().replace(microsecond=0)
 
     self.update_statistics(timestamp)
     self.update_namespaces(timestamp)

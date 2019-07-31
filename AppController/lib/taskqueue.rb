@@ -2,13 +2,12 @@
 
 # First-party Ruby libraries
 require 'posixpsutil'
-require 'resolv'
 require 'socket'
 require 'timeout'
 
 # Imports for AppController libraries
 $:.unshift File.join(File.dirname(__FILE__))
-require 'djinn_job_data'
+require 'node_info'
 require 'helperfunctions'
 require 'monit_interface'
 
@@ -44,10 +43,14 @@ module TaskQueue
   # The path to the file that the shared secret should be written to.
   COOKIE_FILE = '/var/lib/rabbitmq/.erlang.cookie'.freeze
 
+  # The location of taskqueue venv pip
+  TASKQUEUE_PIP = '/opt/appscale_venvs/appscale_taskqueue/bin/pip'.chomp
+
   # The location of the taskqueue server script. This service controls
   # and creates celery workers, and receives taskqueue protocol buffers
   # from AppServers.
-  TASKQUEUE_SERVER_SCRIPT = `which appscale-taskqueue`.chomp
+  TASKQUEUE_SERVER_SCRIPT = '/opt/appscale_venvs/appscale_taskqueue' \
+                            '/bin/appscale-taskqueue'.chomp
 
   # Where to find the rabbitmqctl command.
   RABBITMQCTL = `which rabbitmqctl`.chomp
@@ -168,21 +171,25 @@ module TaskQueue
     Djinn.log_debug('Waiting for RabbitMQ on master node to come up')
     HelperFunctions.sleep_until_port_is_open(master_ip, SERVER_PORT)
 
-    # we now reset it to join the head node. To do this we need the
-    # hostname of the master node. We go through few options:
-    # - the old one is to look into /etc/hosts for it
-    # - another one is to just try to resolve it
-    # - finally we give up and use the IP address
-    master_tq_host = `cat /etc/hosts | grep #{master_ip} | tr -s \" \" | cut -d \" \" -f2`.chomp
-    if master_tq_host.empty?
-      begin
-        master_tq_host = Resolv.getname(master_ip)
-      rescue Resolv::ResolvError
-        # We couldn't get the name: let's try to use the IP address.
-        master_tq_host = master_ip
+    # Look up the TaskQueue master's hostname (not the fqdn). To resolve
+    # it we use Addrinfo.getnameinfo since Resolv will not use /etc/hosts
+    # and this could cause issues on private clusters.
+    master_tq_host = nil
+    begin
+      master_tq_host = Addrinfo.ip(master_ip).getnameinfo[0]
+      if master_tq_host =~ /^[[:digit:]]/
+        Djinn.log_warn("#{master_ip} didn't resolve to a hostname! Expect" \
+                       " problems with rabbitmq clustering.")
+      else
+        master_tq_host = master_tq_host.split('.')[0]
       end
+    rescue SocketError
+      Djinn.log_error("Cannot resolv #{master_ip}!")
+      return false
     end
+    Djinn.log_info("Using #{master_tq_host} as master taskqueue hostname.")
 
+    # Now we try to cluster with the master node.
     HelperFunctions::RETRIES.downto(0) { |tries_left|
       Djinn.log_debug('Waiting for RabbitMQ on local node to come up')
       begin
@@ -200,7 +207,7 @@ module TaskQueue
                           ' come up')
           HelperFunctions.sleep_until_port_is_open('localhost', STARTING_PORT)
           Djinn.log_debug('Done waiting for TaskQueue servers')
-          return
+          return true
         end
       rescue Timeout::Error
         tries_left -= 1
@@ -278,6 +285,10 @@ module TaskQueue
     end
 
     flower_cmd = `which flower`.chomp
+    if flower_cmd.empty?
+      Djinn.log_warn('Couldn\'t find flower executable.')
+      return
+    end
     start_cmd = "#{flower_cmd} --basic_auth=appscale:#{flower_password}"
     MonitInterface.start(:flower, start_cmd)
   end

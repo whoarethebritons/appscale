@@ -16,6 +16,12 @@ module CronHelper
   # A String that tells cron not to e-mail anyone about updates.
   NO_EMAIL_CRON = 'MAILTO=""'.freeze
 
+  # Cron.d folder
+  CRON_CONFIG_DIR = '/etc/cron.d/'.freeze
+
+  # Application capture regex.
+  PROJECT_ID_REGEX = /appscale-(.*)/
+
   # Reads the cron configuration file for the given application, and converts
   # any YAML or XML-specified cron jobs to standard cron format.
   #
@@ -23,13 +29,12 @@ module CronHelper
   #   ip: A String that points to the IP address or FQDN where the login node is
   #     running, and thus is the location where cron web requests should be sent
   #     to.
-  #   port: An Integer that indicates what port number the given Google App
-  #     Engine application runs on, so that we send cron web requests to the
-  #     correct application.
   #   app: A String that names the appid of this application.
-  def self.update_cron(ip, port, app)
+  # Raises:
+  #   VersionNotFound if a port cannot be found for a cron entry's target.
+  def self.update_cron(ip, app)
     app_crontab = NO_EMAIL_CRON + "\n"
-    parsing_log = "saw a cron request with args [#{ip}][#{port}][#{app}]\n"
+    parsing_log = "saw a cron request with args [#{ip}][#{app}]\n"
 
     begin
       yaml_file = ZKInterface.get_cron_config(app)
@@ -44,6 +49,8 @@ module CronHelper
       return
     end
 
+    # Keep track of ports to minimize ZooKeeper requests.
+    ports = {}
     cron_routes.each { |item|
       next if item['url'].nil?
       description = item['description']
@@ -56,6 +63,24 @@ module CronHelper
         Djinn.log_warn("Invalid cron URL: #{item['url']}. Skipping entry.")
         next
       end
+
+      # Determine the port from the target. Use the default service if the
+      # target is not defined or does not exist.
+      target = item.fetch('target', Djinn::DEFAULT_SERVICE)
+      unless ports.key?(target)
+        begin
+          version_details = ZKInterface.get_version_details(
+            app, target, Djinn::DEFAULT_VERSION)
+        rescue VersionNotFound
+          Djinn.log_warn(
+            "Invalid target: #{target}. Using #{Djinn::DEFAULT_SERVICE}.")
+          target = Djinn::DEFAULT_SERVICE
+          version_details = ZKInterface.get_version_details(
+            app, target, Djinn::DEFAULT_VERSION)
+        end
+        ports[target] = version_details['appscaleExtensions']['httpPort']
+      end
+      port = ports[target]
 
       schedule = item['schedule']
       cron_scheds = convert_schedule_to_cron(schedule, url, ip, port, app)
@@ -87,6 +112,11 @@ CRON
   def self.clear_app_crontab(app)
     cron_file = "/etc/cron.d/appscale-#{app}"
     Djinn.log_run("rm -f #{cron_file}") if File.exists?(cron_file)
+  end
+
+  def self.list_app_crontabs
+    dir_app_regex = "appscale-*"
+    return Dir.glob(File.join(CRON_CONFIG_DIR, dir_app_regex))
   end
 
   # Checks if a crontab line is valid.
@@ -232,7 +262,7 @@ CRON
   #   standard cron format. It cannot be applied to a crontab because it only
   #   specifies the frequency of the job, and not the action to perform.
   def self.convert_messy_format(schedule)
-    splitted = schedule.split
+    splitted = schedule.gsub(/[[:space:]]*,[[:space:]]*/, ',').split
 
     # Only 3, 4, 5 or 7-token schedules are supported.
     # Examples:
@@ -396,6 +426,47 @@ CRON
     cron_lines
   end
 
+  # Generates one or more cron lines in standard cron format for an interval
+  # of the given minutes or hours.
+  #
+  # Where values do not repeat evenly in a 24 hour period the last run for the
+  # day is dropped to avoid a short interval.
+  #
+  # Args:
+  #   num: The interval length.
+  #   time: The interval units (mins, minutes, hours)
+  # Returns:
+  #   An Array of Strings, where each String is a cron line in standard cron
+  #   format, that can be applied to a crontab.
+  def self.simple_cron_lines(num, time)
+    time_in_minutes = num * (time == 'hours' ? 60 : 1)
+
+    if time_in_minutes % 60 == 0 and 1440 % time_in_minutes == 0 and time_in_minutes < 1440
+      cron_lines = ["0 */#{time_in_minutes/60} * * *"]
+    elsif 60 % time_in_minutes == 0 and time_in_minutes < 60
+      cron_lines = ["*/#{time_in_minutes} * * * *"]
+    else
+      # break into multiple cron entries, one for each minute past the hour
+      cron_hours_by_minute_past = {0 => [0]}
+      for minute_of_day in (time_in_minutes..(1440-time_in_minutes)).step(time_in_minutes)
+        hours_for_minute_past = cron_hours_by_minute_past[minute_of_day % 60] || []
+        hours_for_minute_past << (minute_of_day / 60)
+        cron_hours_by_minute_past[minute_of_day % 60] = hours_for_minute_past
+      end
+      # if there are multiple minutes with the same hours collapse them
+      cron_minutes_past_by_hours = cron_hours_by_minute_past.map{|min,hours|
+        {hours => [min]}
+      }.reduce({}){|hash, single_hash| hash.merge(single_hash){|key, v1, v2|
+        [].concat(v1).concat(v2).uniq().sort()
+      }}
+      cron_lines = cron_minutes_past_by_hours.map{|hours,mins|
+        "#{mins.join(",")} #{hours.join(",")} * * *"
+      }
+    end
+
+    cron_lines
+  end
+
   # Takes a single cron line specified in the Google App Engine cron format
   # and converts it to one or more cron lines in standard cron format.
   #
@@ -427,10 +498,7 @@ CRON
       cron_lines = convert_messy_format(schedule)
     else
       Djinn.log_debug("Simple format: #{simple_format}")
-      num = $1
-      time = $2
-
-      cron_lines = time == 'hours' ? ["0 */#{num} * * *"] : ["*/#{num} * * * *"] 
+      cron_lines = simple_cron_lines($1.to_i, $2)
     end
     Djinn.log_debug(cron_lines)
     Djinn.log_debug('----------------------')
@@ -474,3 +542,4 @@ CRON
     end
   end
 end
+

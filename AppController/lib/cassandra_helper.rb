@@ -1,8 +1,9 @@
 # Programmer: Navraj Chohan <nlake44@gmail.com>
 require 'djinn'
-require 'djinn_job_data'
+require 'node_info'
 require 'helperfunctions'
 require 'monit_interface'
+require 'set'
 
 # A String that indicates where we write the process ID that Cassandra runs
 # on at this machine.
@@ -36,8 +37,7 @@ CASSANDRA_DATA_DIR = '/opt/appscale/cassandra'.freeze
 # Args:
 #   master_ip: A String corresponding to the private FQDN or IP address of the
 #     machine hosting the Database Master role.
-def setup_db_config_files(master_ip)
-  local_ip = HelperFunctions.local_ip
+def setup_db_config_files(master_ip, local_ip)
   setup_script = "#{SETUP_CONFIG_SCRIPT} --local-ip #{local_ip} "\
                  "--master-ip #{master_ip}"
   until system(setup_script)
@@ -93,7 +93,7 @@ end
 def wait_for_desired_nodes(needed, desired)
   sleep(Djinn::SMALL_WAIT) until system("#{NODETOOL} status > /dev/null 2>&1")
   loop do
-    ready = nodes_ready
+    ready = nodes_ready.length
     Djinn.log_debug("#{ready} nodes are up. #{needed} are needed.")
     break if ready >= needed
     sleep(Djinn::SMALL_WAIT)
@@ -103,7 +103,7 @@ def wait_for_desired_nodes(needed, desired)
   begin
     Timeout.timeout(60) {
       loop do
-        ready = nodes_ready
+        ready = nodes_ready.length
         Djinn.log_debug("#{ready} nodes are up. #{desired} are desired.")
         break if ready >= desired
         sleep(Djinn::SMALL_WAIT)
@@ -174,12 +174,27 @@ def needed_for_quorum(total_nodes, replication)
   total_nodes - can_fail
 end
 
-# Returns the number of nodes in 'Up Normal' state.
+# Returns an array of nodes in 'Up Normal' state.
 def nodes_ready
-  output = `"#{NODETOOL}" status`
-  nodes_ready = 0
+  # Example output of `nodetool gossipinfo`:
+  # /192.168.33.10
+  #   ...
+  #   STATUS:15272:NORMAL,f02dd17...
+  #   LOAD:263359:1.29168682182E11
+  #   ...
+  # /192.168.33.11
+  # ...
+  output = `"#{NODETOOL}" gossipinfo`
+  return [] unless $?.exitstatus == 0
+
+  live_nodes = Set[]
+  current_node = nil
   output.split("\n").each { |line|
-    nodes_ready += 1 if line.start_with?('UN')
+    current_node = line[1..-1] if line.start_with?('/')
+    next if current_node.nil?
+    if line.include?('STATUS') && line.include?('NORMAL')
+      live_nodes.add(current_node)
+    end
   }
-  nodes_ready
+  live_nodes.to_a
 end

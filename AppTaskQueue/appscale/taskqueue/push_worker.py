@@ -4,9 +4,8 @@ import json
 import logging
 import os
 import sys
+import time
 
-from appscale.common import appscale_info
-from appscale.common import constants
 from appscale.common.unpackaged import APPSCALE_PYTHON_APPSERVER
 from celery.utils.log import get_task_logger
 from eventlet.green import httplib
@@ -14,7 +13,7 @@ from eventlet.green.httplib import BadStatusLine
 from eventlet.timeout import Timeout as EventletTimeout
 from socket import error as SocketError
 from urlparse import urlparse
-from .task_name import TaskName
+from .datastore_client import DatastoreClient, DatastoreTransientError
 from .tq_lib import TASK_STATES
 from .utils import (
   create_celery_for_app,
@@ -23,9 +22,6 @@ from .utils import (
 )
 
 sys.path.append(APPSCALE_PYTHON_APPSERVER)
-from google.appengine.api import apiproxy_stub_map
-from google.appengine.api import datastore_distributed
-from google.appengine.ext import db
 
 
 # The maximum number of seconds a task is permitted to take.
@@ -41,13 +37,6 @@ celery = create_celery_for_app(app_id, rates)
 
 logger = get_task_logger(__name__)
 logger.setLevel(logging.INFO)
-
-db_proxy = appscale_info.get_db_proxy()
-connection_str = '{}:{}'.format(db_proxy, str(constants.DB_SERVER_PORT))
-ds_distrib = datastore_distributed.DatastoreDistributed(
-  'appscaledashboard', connection_str, require_indexes=False)
-apiproxy_stub_map.apiproxy.RegisterStub('datastore_v3', ds_distrib)
-os.environ['APPLICATION_ID'] = 'appscaledashboard'
 
 
 def get_wait_time(retries, args):
@@ -69,6 +58,42 @@ def get_wait_time(retries, args):
   wait_time = 2 ** (max_doublings - 1) * min_backoff_seconds
   wait_time = min(wait_time, max_backoff_seconds)
   return wait_time
+
+
+def update_task(task_name, new_state, retries=3):
+  """ Updates an entity for a given task.
+
+  Args:
+    task_name: A string specifying the task name key.
+    new_state: A string specifying the new task state.
+    retries: An integer specifying how many times to retry the update.
+  """
+  datastore = DatastoreClient()
+  try:
+    task_name_entity = datastore.get(app_id, task_name)
+  except DatastoreTransientError as error:
+    retries -= 1
+    if retries >= 0:
+      logger.warning('Error fetching task name: {}. Retrying'.format(error))
+      return update_task(task_name, retries)
+
+    raise
+
+  if task_name_entity is not None:
+    task_name_entity.state = new_state
+    if new_state in (TASK_STATES.EXPIRED, TASK_STATES.FAILED,
+                     TASK_STATES.SUCCESS):
+      task_name_entity.endtime = int(time.time())
+
+    try:
+      datastore.put(app_id, task_name_entity)
+    except DatastoreTransientError as error:
+      retries -= 1
+      if retries >= 0:
+        logger.warning('Error updating task name: {}. Retrying'.format(error))
+        return update_task(task_name, retries)
+
+      raise
 
 
 def execute_task(task, headers, args):
@@ -114,12 +139,7 @@ def execute_task(task, headers, args):
            args['task_name'], task.request.id, args['expires']))
         celery.control.revoke(task.request.id)
 
-        item = TaskName.get_by_key_name(args['task_name'])
-        if item is not None:
-          item.state = TASK_STATES.EXPIRED
-          item.endtime = datetime.datetime.now()
-          db.put(item)
-
+        update_task(args['task_name'], TASK_STATES.EXPIRED)
         return
 
       if (args['max_retries'] != 0 and
@@ -129,12 +149,7 @@ def execute_task(task, headers, args):
           args['max_retries']))
         celery.control.revoke(task.request.id)
 
-        item = TaskName.get_by_key_name(args['task_name'])
-        if item is not None:
-          item.state = TASK_STATES.FAILED
-          item.endtime = datetime.datetime.now()
-          db.put(item)
-
+        update_task(args['task_name'], TASK_STATES.FAILED)
         return
 
       # Targets do not get X-Forwarded-Proto from nginx, they use haproxy port.
@@ -196,11 +211,7 @@ def execute_task(task, headers, args):
 
       if 200 <= response.status < 300:
         # Task successful.
-        item = TaskName.get_by_key_name(args['task_name'])
-        if item is not None:
-          item.state = TASK_STATES.SUCCESS
-          item.endtime = datetime.datetime.now()
-          db.put(item)
+        update_task(args['task_name'], TASK_STATES.SUCCESS)
 
         time_elapsed = datetime.datetime.utcnow() - start_time
         logger.info(

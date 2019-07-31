@@ -15,6 +15,11 @@ class HTTPCodes(object):
   NOT_IMPLEMENTED = 501
 
 
+class InvalidIndexConfiguration(Exception):
+  """ Indicates that a given configuration cannot be enforced. """
+  pass
+
+
 class MonitStates(object):
   MISSING = 'missing'
   PENDING = 'pending'  # Monit is trying to either start or stop the process.
@@ -22,6 +27,10 @@ class MonitStates(object):
   STOPPED = 'stopped'  # Monit will likely try to start the process soon.
   UNMONITORED = 'unmonitored'
 
+
+def non_negative_int(value):
+  """ Checks if an integer value is greater or equal than 0. """
+  return isinstance(value, int) and value >= 0
 
 # AppScale home directory.
 APPSCALE_HOME = os.environ.get("APPSCALE_HOME", "/root/appscale")
@@ -38,6 +47,12 @@ APPSCALE_DATA_DIR = '/opt/appscale'
 # Location of Java AppServer.
 JAVA_APPSERVER = APPSCALE_HOME + '/AppServer_Java'
 
+# The directory where the python27 runtime is installed.
+PYTHON27_RUNTIME_DIR = os.path.join(APPSCALE_HOME, 'AppServer')
+
+# The directory where the java8 runtime is installed.
+JAVA8_RUNTIME_DIR = os.path.join('/opt', 'appscale_java8_runtime')
+
 # The format each service should use for logging.
 LOG_FORMAT = '%(asctime)s %(levelname)s %(filename)s:%(lineno)s %(message)s '
 
@@ -46,6 +61,9 @@ LOAD_BALANCER_IPS_LOC = '/etc/appscale/load_balancer_ips'
 
 # The location of the file which specifies all the ips for this deployment.
 ALL_IPS_LOC = '/etc/appscale/all_ips'
+
+# A prefix used to indicate that a config file is AppServer-related.
+GAE_PREFIX = 'gae_'
 
 # The location of the file which specifies the public IP of the head node.
 HEADNODE_IP_LOC = '/etc/appscale/head_node_private_ip'
@@ -98,6 +116,8 @@ PYTHON27 = "python27"
 # Java programs.
 JAVA = "java"
 
+JAVA8 = "java8"
+
 # Go programs.
 GO = "go"
 
@@ -107,8 +127,8 @@ PHP = "php"
 # Location where applications are stored.
 APPS_PATH = "/var/apps/"
 
-# Locations of ZooKeeper in json format.
-ZK_LOCATIONS_JSON_FILE = "/etc/appscale/zookeeper_locations.json"
+# Locations of ZooKeeper.
+ZK_LOCATIONS_FILE = "/etc/appscale/zookeeper_locations"
 
 # Default location for connecting to ZooKeeper.
 ZK_DEFAULT_CONNECTION_STR = "localhost:2181"
@@ -149,6 +169,9 @@ LOG_DIR = os.path.join('/var', 'log', 'appscale')
 # The default directory for run-time variable data (eg. pidfiles).
 VAR_DIR = os.path.join('/', 'var', 'run', 'appscale')
 
+# A directory that contains miscellaneous helper scripts.
+SCRIPTS_DIR = os.path.join(APPSCALE_HOME, 'scripts')
+
 # The number of seconds to wait before retrying some operations.
 SMALL_WAIT = 5
 
@@ -158,3 +181,6 @@ TINY_WAIT = .1
 # The character used to separate portions of a complete version string.
 # (e.g. guestbook_default_v1)
 VERSION_PATH_SEPARATOR = '_'
+
+# The ZooKeeper node that keeps track of running AppServers by version.
+VERSION_REGISTRATION_NODE = '/appscale/instances_by_version'

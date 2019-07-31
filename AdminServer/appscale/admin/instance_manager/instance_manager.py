@@ -1,33 +1,37 @@
 """ Fulfills AppServer instance assignments from the scheduler. """
+import hashlib
+import httplib
 import logging
-import math
 import json
 import os
 import psutil
 import signal
+import time
 import urllib2
 
 from tornado import gen
 from tornado.ioloop import IOLoop, PeriodicCallback
 from tornado.locks import Lock as AsyncLock
 
-from appscale.admin.constants import UNPACK_ROOT
+from appscale.admin.constants import CONTROLLER_STATE_NODE, UNPACK_ROOT
 from appscale.admin.instance_manager.constants import (
   API_SERVER_LOCATION, API_SERVER_PREFIX, APP_LOG_SIZE, BACKOFF_TIME,
   BadConfigurationException, DASHBOARD_LOG_SIZE, DASHBOARD_PROJECT_ID,
-  DEFAULT_MAX_APPSERVER_MEMORY, FETCH_PATH, GO_SDK, INSTANCE_CLASSES,
-  JAVA_APPSERVER_CLASS, MAX_API_SERVER_PORT, MAX_INSTANCE_RESPONSE_TIME,
-  MONIT_INSTANCE_PREFIX, NoRedirection, PIDFILE_TEMPLATE, PYTHON_APPSERVER,
-  START_APP_TIMEOUT, STARTING_INSTANCE_PORT, VERSION_REGISTRATION_NODE)
+  DEFAULT_MAX_APPSERVER_MEMORY, FETCH_PATH, GO_SDK, HEALTH_CHECK_TIMEOUT,
+  INSTANCE_CLASSES, JAVA_APPSERVER_CLASS, MAX_API_SERVER_PORT,
+  MAX_INSTANCE_RESPONSE_TIME, MONIT_INSTANCE_PREFIX, NoRedirection,
+  PIDFILE_TEMPLATE, PYTHON_APPSERVER, START_APP_TIMEOUT,
+  STARTING_INSTANCE_PORT, VERSION_REGISTRATION_NODE)
 from appscale.admin.instance_manager.instance import (
-  create_java_app_env, create_java_start_cmd, create_python_app_env,
-  create_python27_start_cmd, get_login_server, Instance)
+  create_java_app_env, create_java_start_cmd, create_python_api_start_cmd,
+  create_python_app_env, create_python27_start_cmd, get_login_server, Instance)
 from appscale.admin.instance_manager.stop_instance import stop_instance
-from appscale.admin.instance_manager.utils import setup_logrotate
+from appscale.admin.instance_manager.utils import setup_logrotate, \
+  remove_logrotate
 from appscale.common import appscale_info, monit_app_configuration
 from appscale.common.async_retrying import retry_data_watch_coroutine
 from appscale.common.constants import (
-  APPS_PATH, GO, HTTPCodes, JAVA, MonitStates, PHP, PYTHON27, VAR_DIR,
+  APPS_PATH, GO, HTTPCodes, JAVA, JAVA8, MonitStates, PHP, PYTHON27, VAR_DIR,
   VERSION_PATH_SEPARATOR)
 from appscale.common.monit_interface import DEFAULT_RETRIES, ProcessNotFound
 from appscale.common.retrying import retry
@@ -77,9 +81,6 @@ class InstanceManager(object):
   # The seconds to wait between performing health checks.
   HEALTH_CHECK_INTERVAL = 60
 
-  # The ZooKeeper node that keeps track of the head node's state.
-  CONTROLLER_STATE_NODE = '/appcontroller/state'
-
   def __init__(self, zk_client, monit_operator, routing_client,
                projects_manager, deployment_config, source_manager,
                syslog_server, thread_pool, private_ip):
@@ -116,6 +117,8 @@ class InstanceManager(object):
     # Instances that this machine should run.
     # For example, {guestbook_default_v1: [20000, -1]}
     self._assignments = None
+    # List of API server ports by project id. There may be an api server and
+    # a python runtime api server per project.
     self._api_servers = {}
     self._running_instances = set()
     self._login_server = None
@@ -129,7 +132,7 @@ class InstanceManager(object):
 
     # Subscribe to changes in controller state, which includes assignments and
     # the 'login' property.
-    self._zk_client.DataWatch(self.CONTROLLER_STATE_NODE,
+    self._zk_client.DataWatch(CONTROLLER_STATE_NODE,
                               self._controller_state_watch)
 
     # Subscribe to changes in project configuration, including relevant
@@ -160,8 +163,9 @@ class InstanceManager(object):
                                         max_memory)
 
     source_archive = version_details['deployment']['zip']['sourceUrl']
+    http_port = version_details['appscaleExtensions']['httpPort']
 
-    api_server_port = yield self._ensure_api_server(version.project_id)
+    api_server_port = yield self._ensure_api_server(version.project_id, runtime)
     yield self._source_manager.ensure_source(
       version.revision_key, source_archive, runtime)
 
@@ -185,7 +189,7 @@ class InstanceManager(object):
         api_server_port)
       env_vars.update(create_python_app_env(self._login_server,
                                             version.project_id))
-    elif runtime == JAVA:
+    elif runtime in (JAVA, JAVA8):
       # Account for MaxPermSize (~170MB), the parent process (~50MB), and thread
       # stacks (~20MB).
       max_heap = max_memory - 250
@@ -196,20 +200,26 @@ class InstanceManager(object):
       start_cmd = create_java_start_cmd(
         version.project_id,
         port,
+        http_port,
         self._login_server,
         max_heap,
         pidfile,
         version.revision_key,
-        api_server_port
+        api_server_port,
+        runtime
       )
 
-      env_vars.update(create_java_app_env(self._deployment_config))
+      env_vars.update(create_java_app_env(self._deployment_config, runtime,
+                                          version.project_id))
     else:
       raise BadConfigurationException(
         'Unknown runtime {} for {}'.format(runtime, version.project_id))
 
     logger.info("Start command: " + str(start_cmd))
     logger.info("Environment variables: " + str(env_vars))
+
+    base_version = version.revision_key.rsplit(VERSION_PATH_SEPARATOR, 1)[0]
+    log_tag = "app_{}".format(hashlib.sha1(base_version).hexdigest()[:28])
 
     monit_app_configuration.create_config_file(
       watch,
@@ -220,7 +230,9 @@ class InstanceManager(object):
       max_memory,
       self._syslog_server,
       check_port=True,
-      kill_exceeded_memory=True)
+      kill_exceeded_memory=True,
+      log_tag=log_tag,
+    )
 
     full_watch = '{}-{}'.format(watch, port)
 
@@ -232,7 +244,7 @@ class InstanceManager(object):
     # where it never starts the process. As a temporary workaround, this
     # small period allows it to finish reloading. This can be removed if
     # instances are started inside a cgroup.
-    yield gen.sleep(0.5)
+    yield gen.sleep(1)
     yield self._monit_operator.send_command_retry_process(full_watch, 'start')
 
     # Make sure the version registration node exists.
@@ -257,15 +269,28 @@ class InstanceManager(object):
 
     def api_server_info(entry):
       prefix, port = entry.rsplit('-', 1)
+      index = 0
       project_id = prefix[len(API_SERVER_PREFIX):]
-      return project_id, int(port)
+      index_and_id = project_id.split('_', 1)
+      if len(index_and_id) > 1:
+        index = int(index_and_id[0])
+        project_id = index_and_id[1]
+      return project_id, index, int(port)
 
     monit_entries = yield self._monit_operator.get_entries()
-    server_entries = [api_server_info(entry) for entry in monit_entries
-                      if entry.startswith(API_SERVER_PREFIX)]
+    monit_entry_list = [entry for entry in monit_entries
+                        if entry.startswith(API_SERVER_PREFIX)]
+    monit_entry_list.sort()
+    server_entries = [api_server_info(entry) for entry in monit_entry_list]
 
-    for project_id, port in server_entries:
-      self._api_servers[project_id] = port
+    for project_id, index, port in server_entries:
+      ports =  (self._api_servers[project_id] if project_id in
+                                                 self._api_servers else [])
+      if not ports:
+        ports = [port]
+        self._api_servers[project_id] = ports
+      else:
+        ports.insert(index, port)
 
   def _recover_state(self):
     """ Establishes current state from Monit entries. """
@@ -311,43 +336,83 @@ class InstanceManager(object):
     self._running_instances = running_instances
 
   @gen.coroutine
-  def _ensure_api_server(self, project_id):
+  def _ensure_api_server(self, project_id, runtime):
     """ Make sure there is a running API server for a project.
 
     Args:
       project_id: A string specifying the project ID.
+      runtime: The runtime for the project
     Returns:
       An integer specifying the API server port.
     """
+    ensure_app_server_api = runtime==JAVA8
     if project_id in self._api_servers:
-      raise gen.Return(self._api_servers[project_id])
+      api_server_ports = self._api_servers[project_id]
+      if not ensure_app_server_api:
+        raise gen.Return(api_server_ports[0])
+      elif len(api_server_ports) > 1:
+          raise gen.Return(api_server_ports[1])
 
     server_port = MAX_API_SERVER_PORT
-    for port in self._api_servers.values():
-      if port <= server_port:
-        server_port = port - 1
+    for ports in self._api_servers.values():
+      for port in ports:
+        if port <= server_port:
+          server_port = port - 1
 
-    zk_locations = appscale_info.get_zk_node_ips()
-    start_cmd = ' '.join([API_SERVER_LOCATION,
+    full_watch = None
+    if not project_id in self._api_servers:
+      watch = ''.join([API_SERVER_PREFIX, project_id])
+      full_watch = '-'.join([watch, str(server_port)])
+      pidfile = os.path.join(VAR_DIR, '{}.pid'.format(full_watch))
+      zk_locations = appscale_info.get_zk_node_ips()
+      start_cmd = ' '.join([API_SERVER_LOCATION,
                           '--port', str(server_port),
                           '--project-id', project_id,
                           '--zookeeper-locations', ' '.join(zk_locations)])
+      monit_app_configuration.create_config_file(
+        watch,
+        start_cmd,
+        pidfile,
+        server_port,
+        max_memory=DEFAULT_MAX_APPSERVER_MEMORY,
+        check_port=True,
+        check_host='127.0.0.1')
+      api_server_port = server_port
+    else:
+      api_server_port = self._api_servers[project_id][0]
 
-    watch = ''.join([API_SERVER_PREFIX, project_id])
-    full_watch = '-'.join([watch, str(server_port)])
-    pidfile = os.path.join(VAR_DIR, '{}.pid'.format(full_watch))
-    monit_app_configuration.create_config_file(
-      watch,
-      start_cmd,
-      pidfile,
-      server_port,
-      max_memory=DEFAULT_MAX_APPSERVER_MEMORY,
-      check_port=True)
+    full_watch_app = None
+    if ensure_app_server_api:
+      # Start an Python 27 runtime API server
+      if api_server_port==server_port:
+        server_port -= 1
+      watch = ''.join([API_SERVER_PREFIX, '1_', project_id])
+      full_watch_app = '-'.join([watch, str(server_port)])
+      pidfile = os.path.join(VAR_DIR, '{}.pid'.format(full_watch_app))
+      start_cmd = create_python_api_start_cmd(project_id,
+                                              self._login_server,
+                                              server_port,
+                                              pidfile,
+                                              api_server_port)
+      monit_app_configuration.create_config_file(
+        watch,
+        start_cmd,
+        pidfile,
+        server_port,
+        max_memory=DEFAULT_MAX_APPSERVER_MEMORY,
+        check_port=True,
+        check_host='127.0.0.1',
+        group='api-server')
+      self._api_servers[project_id] = [api_server_port, server_port]
+    else:
+      self._api_servers[project_id] = [server_port]
 
     yield self._monit_operator.reload(self._thread_pool)
-    yield self._monit_operator.send_command_retry_process(full_watch, 'start')
+    if full_watch:
+      yield self._monit_operator.send_command_retry_process(full_watch, 'start')
+    if full_watch_app:
+      yield self._monit_operator.send_command_retry_process(full_watch_app, 'start')
 
-    self._api_servers[project_id] = server_port
     raise gen.Return(server_port)
 
   @gen.coroutine
@@ -371,6 +436,25 @@ class InstanceManager(object):
 
     stop_instance(watch, MAX_INSTANCE_RESPONSE_TIME)
 
+  def _instance_healthy(self, port):
+    """ Determines the health of an instance with an HTTP request.
+
+    Args:
+      port: An integer specifying the port the instance is listening on.
+    Returns:
+      A boolean indicating whether or not the instance is healthy.
+    """
+    url = "http://" + self._private_ip + ":" + str(port) + FETCH_PATH
+    try:
+      opener = urllib2.build_opener(NoRedirection)
+      response = opener.open(url, timeout=HEALTH_CHECK_TIMEOUT)
+      if response.code == httplib.SERVICE_UNAVAILABLE:
+        return False
+    except IOError:
+      return False
+
+    return True
+
   @gen.coroutine
   def _wait_for_app(self, port):
     """ Waits for the application hosted on this machine, on the given port,
@@ -381,24 +465,15 @@ class InstanceManager(object):
     Returns:
       True on success, False otherwise
     """
-    retries = math.ceil(START_APP_TIMEOUT / BACKOFF_TIME)
+    deadline = time.time() + START_APP_TIMEOUT
 
-    url = "http://" + self._private_ip + ":" + str(port) + FETCH_PATH
-    while retries > 0:
-      try:
-        opener = urllib2.build_opener(NoRedirection)
-        response = opener.open(url)
-        if response.code != HTTPCodes.OK:
-          logger.warning('{} returned {}. Headers: {}'.
-                          format(url, response.code, response.headers.headers))
+    while time.time() < deadline:
+      if self._instance_healthy(port):
         raise gen.Return(True)
-      except IOError:
-        retries -= 1
 
+      logger.debug('Instance at port {} is not ready yet'.format(port))
       yield gen.sleep(BACKOFF_TIME)
 
-    logger.error('Application did not come up on {} after {} seconds'.
-                  format(url, START_APP_TIMEOUT))
     raise gen.Return(False)
 
   @gen.coroutine
@@ -411,8 +486,11 @@ class InstanceManager(object):
     logger.info('Waiting for {}'.format(instance))
     start_successful = yield self._wait_for_app(instance.port)
     if not start_successful:
-      # In case the AppServer fails we let the AppController to detect it
-      # and remove it if it still show in monit.
+      monit_watch = ''.join(
+        [MONIT_INSTANCE_PREFIX, instance.revision_key, '-',
+         str(instance.port)])
+      yield self._unmonitor_and_terminate(monit_watch)
+      yield self._monit_operator.reload(self._thread_pool)
       logger.warning('{} did not come up in time'.format(instance))
       return
 
@@ -421,7 +499,7 @@ class InstanceManager(object):
 
   @gen.coroutine
   def _stop_api_server(self, project_id):
-    """ Make sure there is not a running API server for a project.
+    """ Make sure there are no running API servers for a project.
 
     Args:
       project_id: A string specifying the project ID.
@@ -429,9 +507,11 @@ class InstanceManager(object):
     if project_id not in self._api_servers:
       return
 
-    port = self._api_servers[project_id]
-    watch = '{}{}-{}'.format(API_SERVER_PREFIX, project_id, port)
-    yield self._unmonitor_and_terminate(watch)
+    ports = self._api_servers[project_id]
+    for index, port in enumerate(ports):
+      index_str = '' if index==0 else '{}_'.format(index)
+      watch = '{}{}{}-{}'.format(API_SERVER_PREFIX, index_str, project_id, port)
+      yield self._unmonitor_and_terminate(watch)
     del self._api_servers[project_id]
 
   @gen.coroutine
@@ -479,6 +559,7 @@ class InstanceManager(object):
                          if instance_.project_id == instance.project_id]
     if not project_instances:
       yield self._stop_api_server(instance.project_id)
+      remove_logrotate(instance.project_id)
 
     yield self._monit_operator.reload(self._thread_pool)
     yield self._clean_old_sources()
@@ -526,9 +607,29 @@ class InstanceManager(object):
         yield self._start_instance(version, instance.port)
 
   @gen.coroutine
+  def _restart_unavailable_instances(self):
+    """ Restarts instances that fail health check requests. """
+    with (yield self._work_lock.acquire()):
+      for instance in self._running_instances:
+        # TODO: Add a threshold to avoid restarting on a transient error.
+        if not self._instance_healthy(instance.port):
+          try:
+            version = self._projects_manager.version_from_key(
+              instance.version_key)
+          except KeyError:
+            # If the version no longer exists, avoid doing any work. The
+            # scheduler should remove any assignments for it.
+            continue
+
+          logger.warning('Restarting failed instance: {}'.format(instance))
+          yield self._stop_app_instance(instance)
+          yield self._start_instance(version, instance.port)
+
+  @gen.coroutine
   def _ensure_health(self):
     """ Checks to make sure all required instances are running and healthy. """
     yield self._restart_unrouted_instances()
+    yield self._restart_unavailable_instances()
 
     # Just as an infrequent sanity check, fulfill assignments and enforce
     # instance details.
@@ -542,6 +643,9 @@ class InstanceManager(object):
     # If the manager has not been able to retrieve a valid set of assignments,
     # don't do any work.
     if self._assignments is None:
+      return
+
+    if self._login_server is None:
       return
 
     with (yield self._work_lock.acquire()):
@@ -604,9 +708,11 @@ class InstanceManager(object):
           # scheduler should remove any assignments for it.
           continue
 
+        instance_login_server = get_login_server(instance)
         login_server_changed = (
+          instance_login_server is not None and
           self._login_server is not None and
-          self._login_server != get_login_server(instance))
+          self._login_server != instance_login_server)
         if (instance.revision_key != version.revision_key or
             login_server_changed):
           logger.info('Configuration changed for {}'.format(instance))
@@ -665,7 +771,7 @@ class InstanceManager(object):
         state.
     """
     persistent_update_controller_state = retry_data_watch_coroutine(
-      self.CONTROLLER_STATE_NODE, self._update_controller_state)
+      CONTROLLER_STATE_NODE, self._update_controller_state)
     IOLoop.instance().add_callback(
       persistent_update_controller_state, encoded_controller_state)
 

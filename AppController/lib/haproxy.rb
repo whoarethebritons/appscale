@@ -11,6 +11,7 @@ require 'user_app_client'
 require 'datastore_server'
 require 'taskqueue'
 require 'blobstore'
+require 'search'
 
 # As AppServers within AppScale are usually single-threaded, we run multiple
 # copies of them and load balance traffic to them. Since nginx (our first
@@ -31,12 +32,7 @@ module HAProxy
   SERVICE_SITES_PATH = File.join(HAPROXY_PATH, 'service-sites-enabled')
   SERVICE_MAIN_FILE = File.join(HAPROXY_PATH, "service-haproxy.#{CONFIG_EXTENSION}")
   SERVICE_BASE_FILE = File.join(HAPROXY_PATH, "service-base.#{CONFIG_EXTENSION}")
-  SERVICE_PIDFILE = '/var/run/service-haproxy.pid'.freeze
-  # These are for the AppServer haproxy.
-  SITES_ENABLED_PATH = File.join(HAPROXY_PATH, 'app-sites-enabled')
-  MAIN_CONFIG_FILE = File.join(HAPROXY_PATH, "app-haproxy.#{CONFIG_EXTENSION}")
-  BASE_CONFIG_FILE = File.join(HAPROXY_PATH, "app-base.#{CONFIG_EXTENSION}")
-  PIDFILE = '/var/run/app-haproxy.pid'.freeze
+  SERVICE_PIDFILE = '/var/run/appscale/service-haproxy.pid'.freeze
 
   # Maximum AppServer threaded connections
   MAX_APPSERVER_CONN = 7
@@ -78,20 +74,22 @@ module HAProxy
   # The number of seconds HAProxy should wait for a server response.
   HAPROXY_SERVER_TIMEOUT = 600
 
+  # The version key regex.
+  VERSION_KEY_REGEX = /#{HelperFunctions::GAE_PREFIX}(.*_.*_.*).#{CONFIG_EXTENSION}/
+
   # Start HAProxy for API services.
   def self.services_start
+    if !valid_config?(SERVICE_MAIN_FILE)
+      Djinn.log_warn('Invalid configuration for HAProxy services.')
+      return
+    end
+    return if MonitInterface.is_running?(:service_haproxy)
+
     start_cmd = "#{HAPROXY_BIN} -f #{SERVICE_MAIN_FILE} -D " \
       "-p #{SERVICE_PIDFILE}"
     stop_cmd = "#{BASH_BIN} -c 'kill $(cat #{SERVICE_PIDFILE})'"
     MonitInterface.start_daemon(
       :service_haproxy, start_cmd, stop_cmd, SERVICE_PIDFILE)
-  end
-
-  # Start HAProxy for AppServer instances.
-  def self.apps_start
-    start_cmd = "#{HAPROXY_BIN} -f #{MAIN_CONFIG_FILE} -D -p #{PIDFILE}"
-    stop_cmd = "#{BASH_BIN} -c 'kill $(cat #{PIDFILE})'"
-    MonitInterface.start_daemon(:app_haproxy, start_cmd, stop_cmd, PIDFILE)
   end
 
   # Create the config file for UserAppServer.
@@ -138,19 +136,16 @@ module HAProxy
       return false
     end
 
-    # Internal services uses a different haproxy. Normal application gets
-    # prepended with 'gae_' to avoid possible collisions.
-    if [TaskQueue::NAME, DatastoreServer::NAME,
+    # We only serve internal services here.
+    unless [TaskQueue::NAME, DatastoreServer::NAME, Search2::NAME,
         UserAppClient::NAME, BlobServer::NAME].include?(name)
-      full_version_name = "#{name}"
-      config_path = File.join(SERVICE_SITES_PATH,
-                              "#{full_version_name}.#{CONFIG_EXTENSION}")
-    else
-      full_version_name = "#{HelperFunctions::GAE_PREFIX}#{name}"
-      config_path = File.join(SITES_ENABLED_PATH,
-                              "#{full_version_name}.#{CONFIG_EXTENSION}")
+      Djinn.log_warn("create_app_config called for unknown service: #{name}.")
+      return false
     end
 
+    full_version_name = "#{name}"
+    config_path = File.join(SERVICE_SITES_PATH,
+                            "#{full_version_name}.#{CONFIG_EXTENSION}")
     config = "# Create a load balancer for #{name}.\n"
     config << "listen #{full_version_name}\n"
     config << "  bind #{my_private_ip}:#{listen_port}\n"
@@ -220,22 +215,6 @@ module HAProxy
   # Regenerate the configuration file for HAProxy (if anything changed)
   # then starts or reload haproxy as needed.
   def self.regenerate_config
-    # Regenerate configuration for the AppServers haproxy.
-    if regenerate_config_file(SITES_ENABLED_PATH,
-                              BASE_CONFIG_FILE,
-                              MAIN_CONFIG_FILE)
-      # Ensure the service is monitored and running.
-      apps_start
-      Djinn::RETRIES.downto(0) {
-        break if MonitInterface.is_running?(:app_haproxy)
-        sleep(Djinn::SMALL_WAIT)
-      }
-
-      # Reload with the new configuration file.
-      Djinn.log_run("#{HAPROXY_BIN} -f #{MAIN_CONFIG_FILE} -p #{PIDFILE}" \
-                    " -D -sf `cat #{PIDFILE}`")
-    end
-
     # Regenerate configuration for the AppScale serices haproxy.
     if regenerate_config_file(SERVICE_SITES_PATH,
                               SERVICE_BASE_FILE,
@@ -263,31 +242,15 @@ module HAProxy
     elsif server_name == DatastoreServer::NAME
       # Allow custom number of connections at a time for datastore.
       maxconn = DatastoreServer::MAXCONN
+    elsif server_name == Search2::NAME
+      # Allow custom number of connections at a time for search2.
+      maxconn = Search2::MAXCONN
     else
       # Allow only one connection at a time for other services.
       maxconn = 1
     end
 
     "  server #{server_name}-#{location} #{location} maxconn #{maxconn} check"
-  end
-
-  def self.remove_version(version_key)
-    config_name = "#{HelperFunctions::GAE_PREFIX}#{version_key}.#{CONFIG_EXTENSION}"
-    FileUtils.rm_f(File.join(SITES_ENABLED_PATH, config_name))
-    HAProxy.regenerate_config
-  end
-
-  # Removes all the enabled sites
-  def self.clear_sites_enabled
-    [SITES_ENABLED_PATH, SERVICE_SITES_PATH].each { |path|
-      next unless File.directory?(path)
-      sites = Dir.entries(path)
-      # Remove any files that are not configs
-      sites.delete_if { |site| !site.end_with?(CONFIG_EXTENSION) }
-      full_path_sites = sites.map { |site| File.join(path, site) }
-      FileUtils.rm_f full_path_sites
-      HAProxy.regenerate_config
-    }
   end
 
   # Set up the folder structure and creates the configuration files necessary for haproxy
@@ -345,33 +308,21 @@ defaults
   # The maximum inactivity time allowed for a server.
   timeout server #{HAPROXY_SERVER_TIMEOUT}s
 
-  # Enable the statistics page
-  stats enable
-  stats uri     /haproxy?stats
-  stats realm   Haproxy\ Statistics
-  stats auth    haproxy:stats
-
-  # Create a monitorable URI which returns a 200 if haproxy is up
-  # monitor-uri /haproxy?monitor
-
   # Amount of time after which a health check is considered to have timed out
   timeout check 5000
 
 CONFIG
 
     # Create the sites enabled folder
-    unless File.exists? SITES_ENABLED_PATH
-      FileUtils.mkdir_p SITES_ENABLED_PATH
-    end
     unless File.exists? SERVICE_SITES_PATH
       FileUtils.mkdir_p SERVICE_SITES_PATH
     end
 
     # Write the base configuration file which sets default configuration
-    # parameters for both haproxies.
-    File.open(BASE_CONFIG_FILE, 'w+') { |dest_file| dest_file.write(base_config) }
+    # parameters for the service haproxy process.
     File.open(SERVICE_BASE_FILE, 'w+') { |dest_file|
       dest_file.write(base_config.sub('/stats', '/service-stats'))
     }
   end
 end
+

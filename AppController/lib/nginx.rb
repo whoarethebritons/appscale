@@ -36,6 +36,9 @@ module Nginx
   # Nginx sites-enabled path.
   SITES_ENABLED_PATH = File.join(NGINX_PATH, 'sites-enabled')
 
+  # Application capture regex.
+  VERSION_KEY_REGEX = /appscale-(.*_.*_.*).conf/
+
   # These ports are the one visible from outside, ie the ones that we
   # attach to running applications. Default is to have a maximum of 21
   # applications (8080-8100).
@@ -99,8 +102,11 @@ module Nginx
   # Returns:
   #   boolean: indicates if the nginx configuration has been written.
   def self.write_fullproxy_version_config(version_key, http_port, https_port,
-    my_public_ip, my_private_ip, proxy_port, static_handlers, login_ip,
+    server_name, my_private_ip, proxy_port, static_handlers, load_balancer_ip,
     language)
+
+    # Get project id (needed to look for certificates).
+    project_id, _, _ = version_key.split(Djinn::VERSION_PATH_SEPARATOR)
 
     parsing_log = "Writing proxy for #{version_key} with language " \
       "#{language}.\n"
@@ -108,33 +114,21 @@ module Nginx
     secure_handlers = HelperFunctions.get_secure_handlers(version_key)
     parsing_log += "Secure handlers: #{secure_handlers}.\n"
 
-    always_secure_locations = ""
     never_secure_locations = ""
-    
-    http_location_params = \
+
+    location_params = \
         "\n\tproxy_set_header      X-Real-IP $remote_addr;" \
         "\n\tproxy_set_header      X-Forwarded-For $proxy_add_x_forwarded_for;" \
         "\n\tproxy_set_header      X-Forwarded-Proto $scheme;" \
         "\n\tproxy_set_header      X-Forwarded-Ssl $ssl;" \
-        "\n\tproxy_set_header      Host $http_host;\n\tproxy_redirect        off;" \
-        "\n\tproxy_pass            http://gae_ssl_#{version_key};" \
-        "\n\tproxy_connect_timeout 600;\n\tproxy_read_timeout    600;" \
-        "\n\tclient_body_timeout   600;\n\tclient_max_body_size  2G;" \
+        "\n\tproxy_set_header      Host $http_host;" \
+        "\n\tproxy_redirect        off;" \
+        "\n\tproxy_pass            http://gae_#{version_key};" \
+        "\n\tproxy_connect_timeout 600;" \
+        "\n\tproxy_read_timeout    600;" \
+        "\n\tclient_body_timeout   600;" \
+        "\n\tclient_max_body_size  2G;" \
         "\n    }\n"
-
-    https_location_params = \
-      "\n\tproxy_set_header      X-Real-IP $remote_addr;" \
-      "\n\tproxy_set_header      X-Forwarded-For $proxy_add_x_forwarded_for;" \
-      "\n\tproxy_set_header      X-Forwarded-Proto $scheme;" \
-      "\n\tproxy_set_header      X-Forwarded-Ssl $ssl;" \
-      "\n\tproxy_set_header      Host $http_host;" \
-      "\n\tproxy_redirect        off;" \
-      "\n\tproxy_pass            http://gae_ssl_#{version_key};" \
-      "\n\tproxy_connect_timeout 600;" \
-      "\n\tproxy_read_timeout    600;" \
-      "\n\tclient_body_timeout   600;" \
-      "\n\tclient_max_body_size  2G;" \
-      "\n    }\n"
 
     combined_http_locations = ""
     combined_https_locations = ""
@@ -142,25 +136,31 @@ module Nginx
       if handler["secure"] == "always"
         handler_location = HelperFunctions.generate_secure_location_config(handler, https_port)
         combined_http_locations += handler_location
-        always_secure_locations += handler_location
         handler_https_location = "\n    location ~ #{handler['url']} {"
-        handler_https_location << https_location_params
+        handler_https_location << location_params
         combined_https_locations += handler_https_location
 
       elsif handler["secure"] == "never"
         handler_https_location = HelperFunctions.generate_secure_location_config(handler, http_port)
         combined_https_locations += handler_https_location
         handler_http_location = "\n    location ~ #{handler['url']} {"
-        handler_http_location << http_location_params
+        handler_http_location << location_params
         combined_http_locations += handler_http_location
         never_secure_locations += handler_http_location
 
       elsif handler["secure"] == "non_secure"
         handler_http_location = "\n    location ~ #{handler['url']} {"
-        handler_http_location << http_location_params
+        handler_http_location << location_params
         combined_http_locations += handler_http_location
         combined_https_locations += handler_http_location
       end
+    end
+
+    # At this time, we defer routing and redirects to instances for the Java
+    # runtime. Eventually, we should handle the contents of web.xml here.
+    if secure_handlers.empty? and ['java', 'java8'].include? language
+      combined_http_locations = "\n    location ~ /.* {" + location_params
+      combined_https_locations = combined_http_locations
     end
 
     secure_static_handlers = []
@@ -183,11 +183,18 @@ module Nginx
       HelperFunctions.generate_location_config(handler)
     }.join
 
+
     # Java application needs a redirection for the blobstore.
     java_blobstore_redirection = ''
-    if language == 'java'
+    if ['java', 'java8'].include? language
       java_blobstore_redirection = <<JAVA_BLOBSTORE_REDIRECTION
 location ~ /_ah/upload/.* {
+      proxy_set_header      X-Appengine-Inbound-Appid #{version_key.split('_').first};
+      proxy_set_header      X-Real-IP $remote_addr;
+      proxy_set_header      X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header      X-Forwarded-Proto $scheme;
+      proxy_set_header      X-Forwarded-Ssl $ssl;
+      proxy_set_header      Host $http_host;
       proxy_pass            http://#{HelperFunctions::GAE_PREFIX}#{version_key}_blobstore;
       proxy_connect_timeout 600;
       proxy_read_timeout    600;
@@ -197,53 +204,9 @@ location ~ /_ah/upload/.* {
 JAVA_BLOBSTORE_REDIRECTION
     end
 
-    if never_secure_locations.include?('location / {')
-      secure_default_location = ''
-    else
-      secure_default_location = <<DEFAULT_CONFIG
-location / {
-      proxy_set_header      X-Real-IP $remote_addr;
-      proxy_set_header      X-Forwarded-For $proxy_add_x_forwarded_for;
-      proxy_set_header      X-Forwarded-Proto $scheme;
-      proxy_set_header      X-Forwarded-Ssl $ssl;
-      proxy_set_header      Host $http_host;
-      proxy_redirect        off;
-      proxy_pass            http://#{HelperFunctions::GAE_PREFIX}ssl_#{version_key};
-      proxy_connect_timeout 600;
-      proxy_read_timeout    600;
-      client_body_timeout   600;
-      client_max_body_size  2G;
-    }
-DEFAULT_CONFIG
-    end
-
-    if always_secure_locations.include?('location / {')
-      non_secure_default_location = ''
-    else
-      non_secure_default_location = <<DEFAULT_CONFIG
-location / {
-      proxy_set_header      X-Real-IP $remote_addr;
-      proxy_set_header      X-Forwarded-For $proxy_add_x_forwarded_for;
-      proxy_set_header      X-Forwarded-Proto $scheme;
-      proxy_set_header      X-Forwarded-Ssl $ssl;
-      proxy_set_header      Host $http_host;
-      proxy_redirect        off;
-      proxy_pass            http://#{HelperFunctions::GAE_PREFIX}#{version_key};
-      proxy_connect_timeout 600;
-      proxy_read_timeout    600;
-      client_body_timeout   600;
-      client_max_body_size  2G;
-    }
-DEFAULT_CONFIG
-    end
-
     config = <<CONFIG
 # Any requests that aren't static files get sent to haproxy
 upstream #{HelperFunctions::GAE_PREFIX}#{version_key} {
-    server #{my_private_ip}:#{proxy_port};
-}
-
-upstream #{HelperFunctions::GAE_PREFIX}ssl_#{version_key} {
     server #{my_private_ip}:#{proxy_port};
 }
 
@@ -257,8 +220,13 @@ map $scheme $ssl {
 }
 
 server {
+    listen #{http_port} default_server;
+    return 444;
+}
+
+server {
     listen      #{http_port};
-    server_name #{my_public_ip}-#{version_key};
+    server_name #{server_name};
 
     # Uncomment these lines to enable logging, and comment out the following two
     #access_log #{NGINX_LOG_PATH}/appscale-#{version_key}.access.log upstream;
@@ -274,28 +242,36 @@ server {
     # If they come here using HTTPS, bounce them to the correct scheme.
     error_page 400 http://$host:$server_port$request_uri;
 
-    #{combined_http_locations}
-    #{non_secure_static_locations}
-    #{non_secure_default_location}
-
-    #{java_blobstore_redirection}
-
-    location /reserved-channel-appscale-path {
+    location = /reserved-channel-appscale-path {
       proxy_buffering    off;
       tcp_nodelay        on;
       keepalive_timeout  600;
-      proxy_pass         http://#{login_ip}:#{CHANNELSERVER_PORT}/http-bind;
+      proxy_pass         http://#{load_balancer_ip}:#{CHANNELSERVER_PORT}/http-bind;
       proxy_read_timeout 120;
     }
+
+    #{java_blobstore_redirection}
+
+    #{combined_http_locations}
+    #{non_secure_static_locations}
+}
+
+server {
+    listen #{https_port} default_server;
+    ssl on;
+    ssl_protocols TLSv1 TLSv1.1 TLSv1.2;  # don't use SSLv3 ref: POODLE
+    ssl_certificate     #{NGINX_PATH}/#{project_id}.pem;
+    ssl_certificate_key #{NGINX_PATH}/#{project_id}.key;
+    return 444;
 }
 
 server {
     listen      #{https_port};
-    server_name #{my_public_ip}-#{version_key}-ssl;
+    server_name #{server_name};
     ssl on;
     ssl_protocols TLSv1 TLSv1.1 TLSv1.2;  # don't use SSLv3 ref: POODLE
-    ssl_certificate     #{NGINX_PATH}/mycert.pem;
-    ssl_certificate_key #{NGINX_PATH}/mykey.pem;
+    ssl_certificate     #{NGINX_PATH}/#{project_id}.pem;
+    ssl_certificate_key #{NGINX_PATH}/#{project_id}.key;
 
     # If they come here using HTTP, bounce them to the correct scheme.
     error_page 400 https://$host:$server_port$request_uri;
@@ -313,29 +289,31 @@ server {
 
     error_page 404 = /404.html;
 
-    #{combined_https_locations}
-    #{secure_static_locations}
-    #{secure_default_location}
-
-    #{java_blobstore_redirection}
-
-    location /reserved-channel-appscale-path {
+    location = /reserved-channel-appscale-path {
       proxy_buffering    off;
       tcp_nodelay        on;
       keepalive_timeout  600;
-      proxy_pass         http://#{login_ip}:#{CHANNELSERVER_PORT}/http-bind;
+      proxy_pass         http://#{load_balancer_ip}:#{CHANNELSERVER_PORT}/http-bind;
       proxy_read_timeout 120;
     }
+
+    #{java_blobstore_redirection}
+
+    #{combined_https_locations}
+    #{secure_static_locations}
 }
 CONFIG
 
     config_path = File.join(SITES_ENABLED_PATH,
                             "appscale-#{version_key}.#{CONFIG_EXTENSION}")
 
-    # Let's reload and overwrite only if something changed.
-    current = ''
-    current = File.read(config_path) if File.exists?(config_path)
-    if current != config
+    # Let's reload and overwrite only if something changed, or new
+    # certificates have been installed.
+    current = File.exists?(config_path) ? File.read(config_path) : ''
+
+    # Make sure we have the proper certificates in place and re-write
+    # nginx config if needed.
+    if ensure_certs_are_in_place(project_id) || current != config
       Djinn.log_debug(parsing_log)
       File.open(config_path, 'w+') { |dest_file| dest_file.write(config) }
       reload_nginx(config_path, version_key)
@@ -361,6 +339,11 @@ CONFIG
     config_name = "appscale-#{version_key}.#{CONFIG_EXTENSION}"
     FileUtils.rm_f(File.join(SITES_ENABLED_PATH, config_name))
     Nginx.reload
+  end
+
+  def self.list_sites_enabled
+    dir_app_regex = "appscale-*_*_*.#{CONFIG_EXTENSION}"
+    return Dir.glob(File.join(SITES_ENABLED_PATH, dir_app_regex))
   end
 
   # Removes all the enabled sites
@@ -463,6 +446,41 @@ LOCATION
     Nginx.reload
   end
 
+  def self.ensure_certs_are_in_place(project_id=nil)
+    # If the project is nil, we'll set up the self-signed certs for the
+    # internal communication.
+    target_certs = ["#{NGINX_PATH}/mycert.pem", "#{NGINX_PATH}/mykey.pem"]
+    src_certs = ["#{Djinn::APPSCALE_CONFIG_DIR}/certs/mycert.pem",
+                 "#{Djinn::APPSCALE_CONFIG_DIR}/certs/mykey.pem"]
+    certs_modified = false
+
+    # Validate and use the project specified certs for the project.
+    if !project_id.nil?
+      target_certs = ["#{NGINX_PATH}/#{project_id}.pem",
+                      "#{NGINX_PATH}/#{project_id}.key"]
+      new_src_certs = ["#{Djinn::APPSCALE_CONFIG_DIR}/certs/#{project_id}.pem",
+                       "#{Djinn::APPSCALE_CONFIG_DIR}/certs/#{project_id}.key"]
+      if File.exist?(new_src_certs[0]) && File.exist?(new_src_certs[1])
+        if system("openssl x509 -in #{new_src_certs[0]} -noout") &&
+            system("openssl rsa -in #{new_src_certs[1]} -noout")
+          src_certs = new_src_certs
+        else
+          Djinn.log_warn("Not using invalid certificate for #{project_id}.")
+        end
+      end
+    end
+
+    target_certs.each_with_index { |cert, index|
+      next if File.exist?(cert) && FileUtils.cmp(cert, src_certs[index])
+
+      FileUtils.cp(src_certs[index], cert)
+      File.chmod(0400, cert)
+      Djinn.log_info("Installed certificate/key in #{cert}.")
+      certs_modified = true
+    }
+    return certs_modified
+  end
+
   # Set up the folder structure and creates the configuration files
   # necessary for nginx.
   def self.initialize_config
@@ -503,14 +521,8 @@ CONFIG
     # Create the sites enabled folder
     FileUtils.mkdir_p SITES_ENABLED_PATH unless File.exists? SITES_ENABLED_PATH
 
-    # Copy certs for ssl. Just copy files once to keep the certificate static.
-    ['mykey.pem', 'mycert.pem'].each { |cert_file|
-      next if File.exist?("#{NGINX_PATH}/#{cert_file}") &&
-              !File.zero?("#{NGINX_PATH}/#{cert_file}")
-
-      FileUtils.cp("#{Djinn::APPSCALE_CONFIG_DIR}/certs/#{cert_file}",
-                   "#{NGINX_PATH}/#{cert_file}")
-    }
+    # Copy the internal certificate (default for internal communication).
+    ensure_certs_are_in_place
 
     # Write the main configuration file which sets default configuration
     # parameters
@@ -522,3 +534,4 @@ CONFIG
     HelperFunctions.shell('service nginx restart')
   end
 end
+

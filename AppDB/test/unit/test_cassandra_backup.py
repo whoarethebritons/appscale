@@ -2,21 +2,18 @@
 
 import re
 import subprocess
-import sys
 import time
 import unittest
 from flexmock import flexmock
 
+import appscale.datastore.backup.utils as utils
+
 from appscale.common import appscale_info
 from appscale.common import appscale_utils
-from appscale.common.unpackaged import INFRASTRUCTURE_MANAGER_DIR
 from appscale.datastore.backup import backup_exceptions
 from appscale.datastore.backup import cassandra_backup
 from appscale.datastore.cassandra_env import rebalance
 from appscale.datastore.cassandra_env.cassandra_interface import NODE_TOOL
-
-sys.path.append(INFRASTRUCTURE_MANAGER_DIR)
-from utils import utils
 
 
 class TestCassandraBackup(unittest.TestCase):
@@ -88,12 +85,10 @@ class TestCassandraBackup(unittest.TestCase):
       method=subprocess.call).and_return(0)
 
     flexmock(appscale_utils).should_receive('ssh').with_args(
-      re.compile('^192.*'), keyname, 'monit summary',
-      method=subprocess.check_output).and_return('summary output')
-    status_outputs = (['Not monitored'] * len(db_ips)) +\
-                     (['Running'] * len(db_ips))
-    flexmock(utils).should_receive('monit_status').\
-      and_return(*status_outputs).one_by_one()
+      re.compile('^192.*'), keyname, 'appscale-admin summary',
+      method=subprocess.check_output).and_return(
+      ['cassandra unmonitored'] * len(db_ips) +
+      ['cassandra running'] * len(db_ips)).one_by_one()
 
     flexmock(appscale_utils).should_receive('ssh').with_args(
       re.compile('^192.*'), keyname, re.compile('^find.* -exec rm .*'))

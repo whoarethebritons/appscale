@@ -29,6 +29,8 @@ module HermesClient
       return JSON.load(response.body)
     rescue Errno::ETIMEDOUT, Timeout::Error
       raise FailedNodeException.new("Failed to call Hermes: timed out")
+    rescue Errno::EHOSTUNREACH
+      raise FailedNodeException.new("Failed to call Hermes: host unreachable")
     rescue Errno::ECONNREFUSED
       raise FailedNodeException.new("Failed to call Hermes: connection refused")
     end
@@ -56,7 +58,7 @@ module HermesClient
         'proxy.frontend' => ['req_tot'],
         'proxy.backend' => ['qcur']
       },
-      'max_age' => 0
+      'max_age' => 5
     }
     if fetch_servers
       data['include_lists']['proxy.server'] = [
@@ -106,5 +108,34 @@ module HermesClient
       "req_tot=#{total_requests_seen}, qcur=#{total_req_in_queue}, " \
       "scur=#{current_sessions}")
     return total_requests_seen, total_req_in_queue, current_sessions
+  end
+
+  # Gets node cpu, memory, loadavg, and disk information from Hermes located on
+  # the local node.
+  #
+  # Args:
+  #   ip: IP address of the local node.
+  #   secret: Deployment secret.
+  #   proxy_name: Name of proxy to return.
+  # Returns:
+  #   The system stats for the local node.
+  #
+  def self.get_system_stats(ip, secret)
+    data = {
+      'include_lists' => {
+        'node'=> ['memory', 'loadavg', 'partitions_dict', 'cpu', 'swap'],
+        'node.cpu'=> ['idle', 'system', 'user', 'count', 'percent'],
+        'node.partition'=> ['used', 'total', 'free'],
+        'node.memory' => ['total', 'available', 'used'],
+        'node.swap' => ['total', 'used', 'free'],
+        'node.loadavg'=> ['last_1min', 'last_5min', 'last_15min']
+      },
+      'max_age' => 5
+    }
+    node_stats_list = HermesClient.make_call(
+      ip, secret, '/stats/local/node', data
+    )
+    Djinn.log_debug("Received #{node_stats_list}")
+    return node_stats_list
   end
 end

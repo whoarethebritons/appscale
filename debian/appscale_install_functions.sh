@@ -16,9 +16,6 @@ if [ -z "${APPSCALE_PACKAGE_MIRROR-}" ]; then
 fi
 
 JAVA_VERSION="java-8-openjdk"
-case "${DIST}" in
-    wheezy) JAVA_VERSION="java-7-openjdk" ;;
-esac
 
 export UNAME_MACHINE=$(uname -m)
 if [ -z "${JAVA_HOME_DIRECTORY-}" ]; then
@@ -132,25 +129,6 @@ EOF
     fi
 }
 
-sethosts()
-{
-    if [ "${IN_DOCKER}" != "yes" ]; then
-        cp -v /etc/hosts /etc/hosts.orig
-        HOSTNAME=`hostname`
-        echo "Generating /etc/hosts"
-        cat <<EOF | tee /etc/hosts
-127.0.0.1       localhost localhost.localdomain
-127.0.1.1 $HOSTNAME
-::1     ip6-localhost ip6-loopback
-fe00::0 ip6-localnet
-ff00::0 ip6-mcastprefix
-ff02::1 ip6-allnodes
-ff02::2 ip6-allrouters
-ff02::3 ip6-allhosts
-EOF
-    fi
-}
-
 setulimits()
 {
     cat <<EOF | tee /etc/security/limits.conf
@@ -164,6 +142,11 @@ EOF
     # On distros with systemd, the open file limit must be adjusted for each
     # service.
     if which systemctl > /dev/null && [ "${IN_DOCKER}" != "yes" ]; then
+        mkdir -p /etc/systemd/system/monit.service.d
+        cat <<EOF > /etc/systemd/system/monit.service.d/override.conf
+[Service]
+LimitNOFILE=200000
+EOF
         mkdir -p /etc/systemd/system/nginx.service.d
         cat <<EOF > /etc/systemd/system/nginx.service.d/override.conf
 [Service]
@@ -273,6 +256,16 @@ installappserverjava()
         # Delete unnecessary files.
         rm -rf ${JAVA_SDK_DIR}/src ${JAVA_SDK_DIR}/lib
     fi
+
+    # Install Java 8 runtime.
+    JAVA8_RUNTIME_PACKAGE="appscale-java8-runtime-1.9.75-1.zip"
+    JAVA8_RUNTIME_MD5="aac2c857ac61d5506dc75e18367aa779"
+    cachepackage ${JAVA8_RUNTIME_PACKAGE} ${JAVA8_RUNTIME_MD5}
+
+    rm -rf /opt/appscale_java8_runtime
+
+    echo "Extracting Java 8 runtime"
+    unzip -q "${PACKAGE_CACHE}/${JAVA8_RUNTIME_PACKAGE}" -d /opt
 }
 
 installtornado()
@@ -312,7 +305,11 @@ installgems()
         gem install --local ${PACKAGE_CACHE}/${CUSTOM_ZK_GEM}
     fi
     sleep 1
-    gem install json ${GEMOPT} -v 1.8.3
+    if [ "${ruby_major_version}" -lt "2" ]; then
+        gem install json ${GEMOPT} -v 1.8.3
+    else
+        gem install json ${GEMOPT}
+    fi
     sleep 1
     gem install soap4r-ng ${GEMOPT} -v 2.0.3
     gem install httparty ${GEMOPT} -v 0.14.0
@@ -325,7 +322,6 @@ installgems()
 postinstallnginx()
 {
     rm -fv /etc/nginx/sites-enabled/default
-    chmod +x /root
 }
 
 installsolr()
@@ -340,6 +336,29 @@ installsolr()
     cachepackage ${SOLR_PACKAGE} ${SOLR_PACKAGE_MD5}
     tar xzf "${PACKAGE_CACHE}/${SOLR_PACKAGE}" -C ${SOLR_DIR}
     mv -v ${SOLR_DIR}/solr-${SOLR_VER} ${SOLR_DIR}/solr
+}
+
+installsolr7()
+{
+    SOLR_VER=7.6.0
+    SOLR_PACKAGE="solr-${SOLR_VER}.tgz"
+    SOLR_PACKAGE_MD5="6363337322523b68c377177b1232c49e"
+    cachepackage ${SOLR_PACKAGE} ${SOLR_PACKAGE_MD5}
+
+    SOLR_EXTRACT_DIR=/opt/
+    SOLR_VAR_DIR=/opt/appscale/solr7/
+    SOLR_ARCHIVE="${PACKAGE_CACHE}/${SOLR_PACKAGE}"
+
+    tar xzf "${SOLR_ARCHIVE}" solr-${SOLR_VER}/bin/install_solr_service.sh --strip-components=2
+
+    echo "Installing Solr ${SOLR_VER}."
+    # -n  Do not start solr service after install.
+    # -f  Upgrade Solr. Overwrite symlink and init script of previous installation.
+    bash ./install_solr_service.sh "${SOLR_ARCHIVE}" \
+              -d ${SOLR_VAR_DIR} \
+              -i ${SOLR_EXTRACT_DIR} \
+              -n -f
+    update-rc.d solr disable
 }
 
 installcassandra()
@@ -529,13 +548,6 @@ postinstallejabberd()
     fi
 }
 
-installpsutil()
-{
-    case ${DIST} in
-        wheezy) pipwrapper psutil ;;
-    esac
-}
-
 installapiclient()
 {
     # The InfrastructureManager requires the Google API client.
@@ -544,29 +556,38 @@ installapiclient()
 
 installgosdk()
 {
+    EXTRAS_DIR="/opt"
+    GO_RUNTIME_DIR="${EXTRAS_DIR}/go_appengine"
     if [ ${UNAME_MACHINE} = "x86_64" ]; then
-        GO_SDK_PACKAGE="appscale-go-runtime-1.9.48.zip"
-        GO_SDK_PACKAGE_MD5="3af8c4f6b3a147f99590862d2815025b"
-
-        GO_RUNTIME_DIR="/opt/go_appengine"
-        cachepackage ${GO_SDK_PACKAGE} ${GO_SDK_PACKAGE_MD5}
-
-        echo "Extracting Go SDK"
-        # Remove existing SDK directory in case it's old.
-        rm -rf ${GO_RUNTIME_DIR}
-        mkdir -p ${GO_RUNTIME_DIR}/gopath
-        unzip -q ${PACKAGE_CACHE}/${GO_SDK_PACKAGE} -d ${GO_RUNTIME_DIR}
+        GO_SDK_PACKAGE="go_appengine_sdk_linux_amd64-1.9.48.zip"
+        GO_SDK_PACKAGE_MD5="b5c1a3eab1ba69993c3a35661ec3043d"
+    elif [ ${UNAME_MACHINE} = "i386" ]; then
+        GO_SDK_PACKAGE="go_appengine_sdk_linux_386-1.9.48.zip"
+        GO_SDK_PACKAGE_MD5="b6aad6a3cb2506dfe1067e06fb93f9fb"
     else
         echo "Warning: There is no binary appscale-go-runtime package"
         echo "available for ${UNAME_MACHINE}. If you need support for Go"
         echo "applications, compile github.com/AppScale/appscale-go-runtime"
         echo "and install in ${GO_RUNTIME_DIR}/goroot."
+        return 0
     fi
+
+    cachepackage ${GO_SDK_PACKAGE} ${GO_SDK_PACKAGE_MD5}
+
+    echo "Extracting Go SDK"
+    # Remove existing SDK directory in case it's old.
+    rm -rf ${GO_RUNTIME_DIR}
+    unzip -q ${PACKAGE_CACHE}/${GO_SDK_PACKAGE} -d ${EXTRAS_DIR}
 }
 
 installpycapnp()
 {
     pipwrapper pycapnp
+}
+
+installpymemcache()
+{
+    pipwrapper pymemcache
 }
 
 installpyyaml()
@@ -618,12 +639,34 @@ installhermes()
     pip install ${APPSCALE_HOME}/Hermes
 }
 
+installinfrastructuremanager()
+{
+    pip install --upgrade --no-deps ${APPSCALE_HOME}/InfrastructureManager
+    pip install ${APPSCALE_HOME}/InfrastructureManager
+}
+
 installtaskqueue()
 {
-    pip install --upgrade --no-deps ${APPSCALE_HOME}/AppTaskQueue[celery_gui]
-    # Fill in new dependencies.
-    # See pip.pypa.io/en/stable/user_guide/#only-if-needed-recursive-upgrade.
-    pip install ${APPSCALE_HOME}/AppTaskQueue[celery_gui]
+    rm -rf /opt/appscale_venvs/appscale_taskqueue/
+    python -m virtualenv /opt/appscale_venvs/appscale_taskqueue/
+
+    TASKQUEUE_PIP=/opt/appscale_venvs/appscale_taskqueue/bin/pip
+
+    "${APPSCALE_HOME}/AppTaskQueue/appscale/taskqueue/protocols/compile_protocols.sh"
+
+    TQ_DIR="${APPSCALE_HOME}/AppTaskQueue/"
+    COMMON_DIR="${APPSCALE_HOME}/common"
+
+    echo "Upgrading appscale-common.."
+    "${TASKQUEUE_PIP}" install --upgrade --no-deps "${COMMON_DIR}"
+    echo "Installing appscale-common dependencies if any missing.."
+    "${TASKQUEUE_PIP}" install "${COMMON_DIR}"
+    echo "Upgrading appscale-taskqueue.."
+    "${TASKQUEUE_PIP}" install --upgrade --no-deps "${TQ_DIR}[celery_gui]"
+    echo "Installing appscale-taskqueue dependencies if any missing.."
+    "${TASKQUEUE_PIP}" install "${TQ_DIR}[celery_gui]"
+
+    echo "appscale-taskqueue has been successfully installed."
 }
 
 installdatastore()
@@ -637,28 +680,35 @@ installapiserver()
     (cd APIServer && protoc --python_out=./appscale/api_server *.proto)
     # This package needs to be installed in a virtualenv because the protobuf
     # library conflicts with the google namespace in the SDK.
-    rm -rf /opt/appscale_api_server
-    virtualenv /opt/appscale_api_server
+    mkdir -p /opt/appscale_venvs
+    rm -rf /opt/appscale_venvs/api_server
+    virtualenv /opt/appscale_venvs/api_server
 
     # The activate script fails under `set -u`.
     unset_opt=$(shopt -po nounset)
-    case ${DIST} in
-        wheezy|trusty)
-            # Tornado 5 does not work with Python<2.7.9.
-            tornado_package='tornado<5'
-            ;;
-        *)
-            tornado_package='tornado'
-            ;;
-    esac
-
     set +u
-    (source /opt/appscale_api_server/bin/activate && \
+    (source /opt/appscale_venvs/api_server/bin/activate && \
      pip install -U pip && \
-     pip install "${tornado_package}" && \
      pip install ${APPSCALE_HOME}/AppControllerClient ${APPSCALE_HOME}/common \
      ${APPSCALE_HOME}/APIServer)
     eval ${unset_opt}
+}
+
+installsearch2()
+{
+    ANTLR_VER=4.7.2
+    ANTLR_JAR="antlr-${ANTLR_VER}-complete.jar"
+    ANTLR_JAR_MD5="58c9cdda732eabd9ea3e197fa7d8f2d6"
+    cachepackage ${ANTLR_JAR} ${ANTLR_JAR_MD5}
+    cp "${PACKAGE_CACHE}/${ANTLR_JAR}" "/usr/local/lib/${ANTLR_JAR}"
+
+    # Create virtual environment based on Python 3
+    rm -rf /opt/appscale_venvs/search2
+    python3 -m venv /opt/appscale_venvs/search2/
+
+    # Let the script compile protocols and parser and install package using pip.
+    "${APPSCALE_HOME}/SearchService2/build-scripts/ensure_searchservice2.sh" \
+        /opt/appscale_venvs/search2/bin/pip
 }
 
 prepdashboard()
@@ -677,11 +727,6 @@ upgradepip()
     # local packages with optional dependencies. Versions greater than Pip 9
     # do not allow replacing packages installed by the distro.
     case "$DIST" in
-        wheezy|trusty)
-            pipwrapper 'pip<10'
-            # Account for the change in the path to the pip binary.
-            hash -r
-            ;;
         jessie)
             # The system's pip does not allow updating itself.
             easy_install --upgrade 'pip<10.0.0b1'

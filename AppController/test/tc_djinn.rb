@@ -49,11 +49,9 @@ class TestDjinn < Test::Unit::TestCase
     assert_equal(BAD_SECRET_MSG, djinn.is_done_initializing(@secret))
     assert_equal(BAD_SECRET_MSG, djinn.get_role_info(@secret))
     assert_equal(BAD_SECRET_MSG, djinn.get_app_info_map(@secret))
-    assert_equal(BAD_SECRET_MSG, djinn.kill(false, @secret))
     assert_equal(BAD_SECRET_MSG, djinn.set_parameters("", "", @secret))
     assert_equal(BAD_SECRET_MSG, djinn.get_node_stats_json(@secret))
     assert_equal(BAD_SECRET_MSG, djinn.get_cluster_stats_json(@secret))
-    assert_equal(BAD_SECRET_MSG, djinn.stop_version(@app, @secret))
     assert_equal(BAD_SECRET_MSG, djinn.get_all_public_ips(@secret))
     assert_equal(BAD_SECRET_MSG, djinn.get_all_private_ips(@secret))
     assert_equal(BAD_SECRET_MSG, djinn.job_start(@secret))
@@ -69,21 +67,21 @@ class TestDjinn < Test::Unit::TestCase
     role1 = {
       "public_ip" => "public_ip",
       "private_ip" => "private_ip",
-      "jobs" => ["shadow"],
+      "roles" => ["shadow"],
       "instance_id" => "instance_id"
     }
 
     role2 = {
       "public_ip" => "public_ip2",
       "private_ip" => "private_ip2",
-      "jobs" => ["compute"],
+      "roles" => ["compute"],
       "instance_id" => "instance_id2"
     }
 
     keyname = "appscale"
 
-    node1 = DjinnJobData.new(role1, keyname)
-    node2 = DjinnJobData.new(role2, keyname)
+    node1 = NodeInfo.new(role1, keyname)
+    node2 = NodeInfo.new(role2, keyname)
 
     # Instead of mocking out "valid_secret?" like we do elsewhere, let's
     # mock out the read_file function, which provides the same effect but
@@ -100,14 +98,14 @@ class TestDjinn < Test::Unit::TestCase
     # make sure role1 got hashed fine
     assert_equal("public_ip", role1_to_hash['public_ip'])
     assert_equal("private_ip", role1_to_hash['private_ip'])
-    assert_equal(["shadow"], role1_to_hash['jobs'])
+    assert_equal(["shadow"], role1_to_hash['roles'])
     assert_equal("instance_id", role1_to_hash['instance_id'])
     assert_equal("cloud1", role1_to_hash['cloud'])
 
     # and make sure role2 got hashed fine
     assert_equal("public_ip2", role2_to_hash['public_ip'])
     assert_equal("private_ip2", role2_to_hash['private_ip'])
-    assert_equal(["compute"], role2_to_hash['jobs'])
+    assert_equal(["compute"], role2_to_hash['roles'])
     assert_equal("instance_id2", role2_to_hash['instance_id'])
     assert_equal("cloud1", role2_to_hash['cloud'])
   end
@@ -124,7 +122,7 @@ class TestDjinn < Test::Unit::TestCase
     one_node_info = JSON.dump([{
       'public_ip' => 'public_ip',
       'private_ip' => 'private_ip',
-      'jobs' => ['some_role'],
+      'roles' => ['some_role'],
       'instance_id' => 'instance_id'
     }])
 
@@ -134,10 +132,9 @@ class TestDjinn < Test::Unit::TestCase
 
     better_credentials = JSON.dump({'keyname' => '0123', 'login' =>
       '1.1.1.1', 'table' => 'cassandra'})
-    result_2 = djinn.set_parameters("", better_credentials,  @secret)
-    # Depending on the JSON library used, "" can either throw an exception
-    # or be interpreted as nil.
-    assert_equal(true, result_2.include?("Error"))
+    assert_raises(AppScaleException) {
+      result_2 = djinn.set_parameters("", better_credentials,  @secret)
+    }
 
     # Now try credentials with an even number of items, but not all the
     # required parameters
@@ -152,16 +149,17 @@ class TestDjinn < Test::Unit::TestCase
       'keyname' => 'appscale'
     })
     bad_node_info = "[1]"
-    result_6 = djinn.set_parameters(bad_node_info, credentials, @secret)
-    assert_equal(true, result_6.include?("Error: node structure is not"))
+    assert_raises(AppScaleException) {
+      result_6 = djinn.set_parameters(bad_node_info, credentials, @secret)
+    }
 
     # Finally, try credentials with info in the right format, but where it
     # refers to nodes that aren't in our deployment
     one_node_info = JSON.dump([{
       'public_ip' => 'public_ip',
       'private_ip' => 'private_ip',
-      'jobs' => ['compute', 'shadow', 'taskqueue_master', 'db_master',
-        'load_balancer', 'login', 'zookeeper', 'memcache'],
+      'roles' => ['compute', 'shadow', 'taskqueue_master', 'db_master',
+                  'load_balancer', 'zookeeper', 'memcache'],
       'instance_id' => 'instance_id',
       'instance_type' => 'instance_type'
     }])
@@ -193,8 +191,8 @@ class TestDjinn < Test::Unit::TestCase
     one_node_info = JSON.dump([{
       'public_ip' => 'public_ip',
       'private_ip' => '1.2.3.4',
-      'jobs' => ['compute', 'shadow', 'taskqueue_master', 'db_master',
-        'load_balancer', 'login', 'zookeeper', 'memcache'],
+      'roles' => ['compute', 'shadow', 'taskqueue_master', 'db_master',
+                  'load_balancer', 'zookeeper', 'memcache'],
       'instance_id' => 'instance_id',
       'instance_type' => 'instance_type'
     }])
@@ -217,13 +215,13 @@ class TestDjinn < Test::Unit::TestCase
     master_role = {
       "public_ip" => "public_ip",
       "private_ip" => "private_ip",
-      "jobs" => ["taskqueue_master"],
+      "roles" => ["taskqueue_master"],
       "instance_id" => "instance_id"
     }
 
     djinn = Djinn.new
     djinn.my_index = 0
-    djinn.nodes = [DjinnJobData.new(master_role, "appscale")]
+    djinn.nodes = [NodeInfo.new(master_role, "appscale")]
 
     # Set the clear_datastore option.
     djinn.options = {'clear_datastore' => 'false',
@@ -254,20 +252,20 @@ class TestDjinn < Test::Unit::TestCase
     master_role = {
       "public_ip" => "public_ip1",
       "private_ip" => "private_ip1",
-      "jobs" => ["taskqueue_master"],
+      "roles" => ["taskqueue_master"],
       "instance_id" => "instance_id1"
     }
 
     slave_role = {
       "public_ip" => "public_ip2",
       "private_ip" => "private_ip2",
-      "jobs" => ["taskqueue_slave"],
+      "roles" => ["taskqueue_slave"],
       "instance_id" => "instance_id2"
     }
 
     djinn = Djinn.new
     djinn.my_index = 1
-    djinn.nodes = [DjinnJobData.new(master_role, "appscale"), DjinnJobData.new(slave_role, "appscale")]
+    djinn.nodes = [NodeInfo.new(master_role, "appscale"), NodeInfo.new(slave_role, "appscale")]
 
     # Set the clear_datastore option.
     djinn.options = {'clear_datastore' => 'false',
@@ -293,10 +291,12 @@ class TestDjinn < Test::Unit::TestCase
     flexmock(HAProxy).should_receive(:create_tq_server_config).and_return()
     flexmock(MonitInterface).should_receive(:start_daemon).and_return()
     flexmock(MonitInterface).should_receive(:start).and_return()
-    flexmock(Resolv).should_receive("getname").with("private_ip1").and_return("")
+    flexmock(Addrinfo).should_receive('ip.getnameinfo').and_return(["hostname-ip1"])
 
-    flexmock(HelperFunctions).should_receive(:sleep_until_port_is_open).
-      and_return()
+    flexmock(HelperFunctions).should_receive(:sleep_until_port_is_open).and_return()
+
+    flexmock(Djinn).should_receive(:log_run).and_return()
+
     assert_equal(true, djinn.start_taskqueue_slave())
   end
 
@@ -305,14 +305,14 @@ class TestDjinn < Test::Unit::TestCase
     role = {
       "public_ip" => "public_ip",
       "private_ip" => "private_ip",
-      "jobs" => ["shadow"],
+      "roles" => ["shadow"],
       "instance_id" => "instance_id"
     }
 
     djinn = Djinn.new
     djinn.my_index = 0
     djinn.done_loading = true
-    my_node = DjinnJobData.new(role, "appscale")
+    my_node = NodeInfo.new(role, "appscale")
     djinn.nodes = [my_node]
 
     baz = flexmock("baz")
@@ -325,18 +325,19 @@ class TestDjinn < Test::Unit::TestCase
     baz.should_receive(:delete).and_return(all_ok)
 
     # Mocks for the AppController root node
-    baz.should_receive(:get).with(:path => ZKInterface::APPCONTROLLER_PATH).
+    baz.should_receive(:get).
+      with(:path => ZKInterface::APPCONTROLLER_PATH).
       and_return({:rc => 0, :data => ZKInterface::DUMMY_DATA,
-        :stat => flexmock(:exists => true)})
+                  :stat => flexmock(:exists => true)})
 
     # Mocks for the appcontroller lock
-    baz.should_receive(:get).with(
-      :path => ZKInterface::APPCONTROLLER_LOCK_PATH).
+    baz.should_receive(:get).
+      with(:path => ZKInterface::APPCONTROLLER_LOCK_PATH).
       and_return({:rc => 0, :data => 'private_ip'})
 
     # Mocks for writing node information
-    baz.should_receive(:get).with(
-      :path => ZKInterface::APPCONTROLLER_NODE_PATH).
+    baz.should_receive(:get).
+      with(:path => ZKInterface::APPCONTROLLER_NODE_PATH).
       and_return({:stat => flexmock(:exists => false)})
     baz.should_receive(:create).with(
       :path => ZKInterface::APPCONTROLLER_NODE_PATH,
@@ -354,21 +355,22 @@ class TestDjinn < Test::Unit::TestCase
       :ephemeral => ZKInterface::EPHEMERAL,
       :data => ZKInterface::DUMMY_DATA).and_return(all_ok)
 
-    baz.should_receive(:get).with(
-      :path => node_path + "/job_data").and_return({
-        :rc => 0, :stat => flexmock(:exists => false)})
+    baz.should_receive(:get).
+      with(:path => node_path + "/job_data").
+      and_return({:rc => 0, :stat => flexmock(:exists => false)})
 
     baz.should_receive(:set).with(
       :path => node_path + "/job_data",
       :data => JSON.dump(my_node.to_hash())).and_return(all_ok)
 
-    baz.should_receive(:get).with(
-      :path => node_path + "/done_loading").and_return({
-        :rc => 0, :stat => flexmock(:exists => true)})
+    baz.should_receive(:get).
+      with(:path => node_path + "/done_loading").
+      and_return({:rc => 0, :stat => flexmock(:exists => true)})
 
-    baz.should_receive(:set).with(
-      :path => node_path + "/done_loading",
-      :data => 'true').and_return(all_ok)
+    baz.should_receive(:set).
+      with(:path => node_path + "/done_loading", :data => 'true',
+           :version => nil).
+      and_return(all_ok)
 
     flexmock(HelperFunctions).should_receive(:sleep_until_port_is_open).
       and_return()
@@ -392,8 +394,9 @@ class TestDjinn < Test::Unit::TestCase
     # Mocks for Appcontroller root node
     file_exists = {:rc => 0, :data => ZKInterface::DUMMY_DATA,
       :stat => flexmock(:exists => true)}
-    mocked_zk.should_receive(:get).with(
-      :path => ZKInterface::APPCONTROLLER_PATH).and_return(file_exists)
+    mocked_zk.should_receive(:get).
+      with(:path => ZKInterface::APPCONTROLLER_PATH).
+      and_return(file_exists)
 
     # Mocks for AppController lock file - the create should fail the first
     # time since the file already exists, and the second time, it should
@@ -407,8 +410,8 @@ class TestDjinn < Test::Unit::TestCase
 
     # On the first get, the file exists (user2 has it)
     get_response = {:rc => 0, :data => "private_ip2"}
-    mocked_zk.should_receive(:get).with(
-      :path => ZKInterface::APPCONTROLLER_LOCK_PATH).
+    mocked_zk.should_receive(:get).
+      with(:path => ZKInterface::APPCONTROLLER_LOCK_PATH).
       and_return(get_response)
 
     # Finally, we should get rid of the lock once we're done with it
@@ -437,7 +440,7 @@ class TestDjinn < Test::Unit::TestCase
       instance.should_receive(:valid_secret?).and_return(true)
     }
 
-    djinn = Djinn.new()
+    djinn = get_djinn_mock
     expected = Djinn::BAD_INPUT_MSG
     actual = djinn.start_roles_on_nodes("", @secret)
     assert_equal(expected, actual)
@@ -451,14 +454,14 @@ class TestDjinn < Test::Unit::TestCase
     role = {
       "public_ip" => "1.2.3.4",
       "private_ip" => "1.2.3.4",
-      "jobs" => ["login","shadow"],
+      "roles" => ["shadow"],
       "instance_id" => "instance_id"
     }
 
     djinn = Djinn.new
     djinn.my_index = 0
     djinn.done_loading = true
-    my_node = DjinnJobData.new(role, "appscale")
+    my_node = NodeInfo.new(role, "appscale")
     djinn.nodes = [my_node]
     djinn.app_info_map = {
       'myapp' => {
@@ -487,14 +490,14 @@ class TestDjinn < Test::Unit::TestCase
     role = {
       "public_ip" => "1.2.3.4",
       "private_ip" => "1.2.3.4",
-      "jobs" => ["login","shadow"],
+      "roles" => ["shadow"],
       "instance_id" => "instance_id"
     }
 
     djinn = Djinn.new
     djinn.my_index = 0
     djinn.done_loading = true
-    my_node = DjinnJobData.new(role, "appscale")
+    my_node = NodeInfo.new(role, "appscale")
     djinn.nodes = [my_node]
     djinn.app_info_map = {
       'myapp' => {
@@ -524,14 +527,14 @@ class TestDjinn < Test::Unit::TestCase
     role = {
       "public_ip" => "1.2.3.4",
       "private_ip" => "1.2.3.4",
-      "jobs" => ["login","shadow"],
+      "roles" => ["shadow"],
       "instance_id" => "instance_id"
     }
 
     djinn = Djinn.new
     djinn.my_index = 0
     djinn.done_loading = true
-    my_node = DjinnJobData.new(role, "appscale")
+    my_node = NodeInfo.new(role, "appscale")
     djinn.nodes = [my_node]
     djinn.app_info_map = {
       'myapp' => {
@@ -561,14 +564,14 @@ class TestDjinn < Test::Unit::TestCase
     role = {
       "public_ip" => "1.2.3.4",
       "private_ip" => "1.2.3.4",
-      "jobs" => ["login","shadow"],
+      "roles" => ["shadow"],
       "instance_id" => "instance_id"
     }
 
     djinn = Djinn.new
     djinn.my_index = 0
     djinn.done_loading = true
-    my_node = DjinnJobData.new(role, "appscale")
+    my_node = NodeInfo.new(role, "appscale")
     djinn.nodes = [my_node]
     djinn.app_info_map = {
       'myapp' => {
@@ -608,8 +611,8 @@ class TestDjinn < Test::Unit::TestCase
     one_node_info = JSON.dump([{
       'public_ip' => 'public_ip',
       'private_ip' => '1.2.3.4',
-      'jobs' => ['compute', 'shadow', 'taskqueue_master', 'db_master',
-        'load_balancer', 'login', 'zookeeper', 'memcache'],
+      'roles' => ['compute', 'shadow', 'taskqueue_master', 'db_master',
+                  'load_balancer', 'zookeeper', 'memcache'],
       'instance_id' => 'instance_id',
       'instance_type' => 'instance_type'
     }])
@@ -647,8 +650,8 @@ class TestDjinn < Test::Unit::TestCase
     one_node_info = JSON.dump([{
       'public_ip' => 'public_ip',
       'private_ip' => '1.2.3.4',
-      'jobs' => ['compute', 'shadow', 'taskqueue_master', 'db_master',
-        'load_balancer', 'login', 'zookeeper', 'memcache'],
+      'roles' => ['compute', 'shadow', 'taskqueue_master', 'db_master',
+                  'load_balancer', 'zookeeper', 'memcache'],
       'instance_id' => 'instance_id',
       'instance_type' => 'instance_type'
     }])
@@ -676,7 +679,7 @@ class TestDjinn < Test::Unit::TestCase
     deployment_id_exists = true
     bad_secret = 'boo'
     good_secret = 'blarg'
-    djinn = flexmock(Djinn.new())
+    djinn = get_djinn_mock
     flexmock(ZKInterface).should_receive(:exists?).
       and_return(deployment_id_exists)
 
@@ -694,7 +697,7 @@ class TestDjinn < Test::Unit::TestCase
     good_secret = 'boo'
     bad_secret = 'blarg'
     deployment_id = 'baz'
-    djinn = flexmock(Djinn.new())
+    djinn = get_djinn_mock
     flexmock(ZKInterface).should_receive(:get).
         and_return(deployment_id)
 
@@ -730,11 +733,11 @@ class TestDjinn < Test::Unit::TestCase
     role = {
         "public_ip" => "my public ip",
         "private_ip" => "my private ip",
-        "jobs" => ["login"]
+        "roles" => []
     }
     djinn = flexmock(Djinn.new())
     djinn.my_index = 0
-    djinn.nodes = [DjinnJobData.new(role, "appscale")]
+    djinn.nodes = [NodeInfo.new(role, "appscale")]
     djinn.done_loading = true
     djinn
   end

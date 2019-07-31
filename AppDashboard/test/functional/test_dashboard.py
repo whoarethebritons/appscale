@@ -41,21 +41,21 @@ class FunctionalTestAppDashboard(unittest.TestCase):
       # TODO make up example of cluster stats
       # TODO and make sure that this change doesn't break tests
       {
-        # System stats provided by infrastucture manager
+        # System stats provided by Hermes
         "cpu": {
           "idle": 50.0,
           "system": 28.2,
           "user": 10.5,
           "count": 2,
         },
-        "disk": [
-          # For each partition
-          {"total": 30965743616,
-           "free": 15482871808,
-           "used": 15482871808},
-          {"total": 7309782470,
-           "free": 3654891235,
-           "used": 3654891235},
+        "partitions_dict": [
+          {
+            "/" : {
+              "total": 30965743616,
+              "free": 15482871808,
+              "used": 15482871808,
+            }
+          }
         ],
         "memory": {
           "total": 12365412865,
@@ -72,11 +72,9 @@ class FunctionalTestAppDashboard(unittest.TestCase):
           "cassandra": "Running",
         },
         "loadavg": {
-           "last_1_min": 0.08,
-           "last_5_min": 0.27,
-           "last_15_min": 0.33,
-           "runnable_entities": 3,
-           "scheduling_entities": 383
+           "last_1min": 0.08,
+           "last_5min": 0.27,
+           "last_15min": 0.33
         },
         # Node information provided by AppController itself
         "apps": {
@@ -97,17 +95,21 @@ class FunctionalTestAppDashboard(unittest.TestCase):
         "roles": ["shadow", "zookeeper", "datastore", "taskqueue"],
       },
       {
-        # System stats provided by infrastucture manager
+        # System stats provided by Hermes
         "cpu": {
           "idle": 50.0,
           "system": 28.2,
           "user": 10.5,
           "count": 2,
         },
-        "disk": [
-          # For each partition
-          {"free": 15482871808,
-           "used": 15482871808}
+        "partitions_dict": [
+          {
+            "/" : {
+              "total": 30965743616,
+              "free": 15482871808,
+              "used": 15482871808,
+            }
+          }
         ],
         "memory": {
           "total": 12365412865,
@@ -123,11 +125,9 @@ class FunctionalTestAppDashboard(unittest.TestCase):
           # TODO
         },
         "loadavg": {
-           "last_1_min": 0.08,
-           "last_5_min": 0.27,
-           "last_15_min": 0.33,
-           "runnable_entities": 3,
-           "scheduling_entities": 383
+           "last_1min": 0.08,
+           "last_5min": 0.27,
+           "last_15min": 0.33
         },
         # Node information provided by AppController itself
         "apps": {},
@@ -140,14 +140,13 @@ class FunctionalTestAppDashboard(unittest.TestCase):
       }
     ])
     acc.should_receive('get_role_info').and_return(
-     [{'jobs': ['shadow', 'login'], 'public_ip':'1.1.1.1'} ]
+     [{'roles': ['shadow', 'login'], 'public_ip':'1.1.1.1'} ]
      )
     acc.should_receive('get_database_information').and_return(
       {'table':'fake_database', 'replication':1}
       )
     acc.should_receive('upload_tgz').and_return('true')
-    acc.should_receive('stop_version').and_return('true')
-   
+
     fake_soap = flexmock(name='fake_soap')
     soap = flexmock(SOAPpy)
     soap.should_receive('SOAPProxy').and_return(fake_soap)
@@ -185,7 +184,7 @@ class FunctionalTestAppDashboard(unittest.TestCase):
 
     self.request = self.fakeRequest()
     self.response = self.fakeResponse()
-    self.set_user()  
+    self.set_user()
 
     fake_tq = flexmock(taskqueue)
     fake_tq.should_receive('add').and_return()
@@ -305,7 +304,7 @@ class FunctionalTestAppDashboard(unittest.TestCase):
     res.deleted_cookies = {}
     res.redirect_location = None
     res.out = StringIO.StringIO()
-    def fake_set_cookie(key, value='', max_age=None, path='/', domain=None, 
+    def fake_set_cookie(key, value='', max_age=None, path='/', domain=None,
       secure=None, httponly=False, comment=None, expires=None, overwrite=False):
       res.cookies[key] = value
     def fake_delete_cookie(key, path='/', domain=None):

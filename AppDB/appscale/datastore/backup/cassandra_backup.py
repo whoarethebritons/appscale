@@ -4,15 +4,16 @@
 import logging
 import os
 import subprocess
-import sys
 import time
+
+import appscale.datastore.backup.utils as utils
 
 from appscale.common import appscale_info
 from appscale.common import appscale_utils
 from appscale.common import monit_interface
 from appscale.common.constants import APPSCALE_DATA_DIR
+from appscale.common.constants import MonitStates
 from appscale.common.constants import SCHEMA_CHANGE_TIMEOUT
-from appscale.common.unpackaged import INFRASTRUCTURE_MANAGER_DIR
 from subprocess import CalledProcessError
 from . import backup_recovery_helper
 from .backup_exceptions import BRException
@@ -23,13 +24,7 @@ from ..cassandra_env import cassandra_interface
 from ..cassandra_env.cassandra_interface import NODE_TOOL
 from ..cassandra_env.cassandra_interface import CASSANDRA_MONIT_WATCH_NAME
 
-sys.path.append(INFRASTRUCTURE_MANAGER_DIR)
-from utils import utils
-from utils.utils import ExitCodes
-from utils.utils import MonitStates
-
 logger = logging.getLogger(__name__)
-
 
 def clear_old_snapshots():
   """ Remove any old snapshots to minimize disk space usage locally. """
@@ -186,7 +181,7 @@ def restore_data(path, keyname, force=False):
   for db_ip in db_ips:
     exit_code = appscale_utils.ssh(db_ip, keyname, 'ls {}'.format(path),
                                    method=subprocess.call)
-    if exit_code != ExitCodes.SUCCESS:
+    if exit_code != utils.ExitCodes.SUCCESS:
       machines_without_restore.append(db_ip)
 
   if machines_without_restore and not force:
@@ -198,19 +193,21 @@ def restore_data(path, keyname, force=False):
 
   for db_ip in db_ips:
     logger.info('Stopping Cassandra on {}'.format(db_ip))
-    summary = appscale_utils.ssh(db_ip, keyname, 'monit summary',
+    summary = appscale_utils.ssh(db_ip, keyname, 'appscale-admin summary',
                                  method=subprocess.check_output)
-    status = utils.monit_status(summary, CASSANDRA_MONIT_WATCH_NAME)
+    status_line = next((line for line in summary.split('\n')
+                        if line.startswith(CASSANDRA_MONIT_WATCH_NAME)), '')
     retries = SERVICE_RETRIES
-    while status != MonitStates.UNMONITORED:
+    while MonitStates.UNMONITORED not in status_line:
       appscale_utils.ssh(
         db_ip, keyname,
         'appscale-stop-service {}'.format(CASSANDRA_MONIT_WATCH_NAME),
         method=subprocess.call)
       time.sleep(3)
-      summary = appscale_utils.ssh(db_ip, keyname, 'monit summary',
+      summary = appscale_utils.ssh(db_ip, keyname, 'appscale-admin summary',
                                    method=subprocess.check_output)
-      status = utils.monit_status(summary, CASSANDRA_MONIT_WATCH_NAME)
+      status_line = next((line for line in summary.split('\n')
+                          if line.startswith(CASSANDRA_MONIT_WATCH_NAME)), '')
       retries -= 1
       if retries < 0:
         raise BRException('Unable to stop Cassandra')
@@ -230,16 +227,17 @@ def restore_data(path, keyname, force=False):
 
     logger.info('Starting Cassandra on {}'.format(db_ip))
     retries = SERVICE_RETRIES
-    status = MonitStates.UNMONITORED
-    while status != MonitStates.RUNNING:
+    status_line = MonitStates.UNMONITORED
+    while MonitStates.RUNNING not in status_line:
       appscale_utils.ssh(
         db_ip, keyname,
         'appscale-start-service {}'.format(CASSANDRA_MONIT_WATCH_NAME),
         method=subprocess.call)
       time.sleep(3)
-      summary = appscale_utils.ssh(db_ip, keyname, 'monit summary',
+      summary = appscale_utils.ssh(db_ip, keyname, 'appscale-admin summary',
                                    method=subprocess.check_output)
-      status = utils.monit_status(summary, CASSANDRA_MONIT_WATCH_NAME)
+      status_line = next((line for line in summary.split('\n')
+                          if line.startswith(CASSANDRA_MONIT_WATCH_NAME)), '')
       retries -= 1
       if retries < 0:
         raise BRException('Unable to start Cassandra')

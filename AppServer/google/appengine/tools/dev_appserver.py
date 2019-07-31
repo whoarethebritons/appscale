@@ -3587,8 +3587,7 @@ def SetupStubs(app_id, **config):
         capability_stub.CapabilityServiceStub())
 
     datastore = datastore_distributed.DatastoreDistributed(
-          app_id, datastore_path, require_indexes=require_indexes,
-          trusted=trusted, root_path=root_path)
+        app_id, datastore_path, trusted=trusted)
 
     apiproxy_stub_map.apiproxy.ReplaceStub(
         'datastore_v3', datastore)
@@ -3604,7 +3603,7 @@ def SetupStubs(app_id, **config):
 
     apiproxy_stub_map.apiproxy.RegisterStub(
         'memcache',
-        memcache_distributed.MemcacheService())
+        memcache_distributed.MemcacheService(app_id))
 
     apiproxy_stub_map.apiproxy.RegisterStub(
         'taskqueue',
@@ -3616,7 +3615,8 @@ def SetupStubs(app_id, **config):
 
     apiproxy_stub_map.apiproxy.RegisterStub(
         'xmpp',
-        xmpp_service_real.XmppService(domain=xmpp_path, uaserver=uaserver_path))
+        xmpp_service_real.XmppService(xmpp_path, domain=login_server,
+                                      uaserver=uaserver_path))
 
     apiproxy_stub_map.apiproxy.RegisterStub(
         'logservice',

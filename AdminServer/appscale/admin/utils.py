@@ -11,19 +11,27 @@ import tarfile
 
 from appscale.common.constants import HTTPCodes
 from appscale.common.constants import VERSION_PATH_SEPARATOR
-from appscale.taskqueue import constants as tq_constants
-from appscale.taskqueue.constants import InvalidQueueConfiguration
 from kazoo.exceptions import NoNodeError
 
-from . import constants
 from .constants import (
+  AUTO_HTTP_PORTS,
+  AUTO_HTTPS_PORTS,
   CustomHTTPError,
+  HAPROXY_PORTS,
   GO,
-  InvalidConfiguration,
+  InvalidCronConfiguration,
+  InvalidQueueConfiguration,
+  InvalidSource,
   JAVA,
+  JAVA8,
+  REQUIRED_PULL_QUEUE_FIELDS,
+  REQUIRED_PUSH_QUEUE_FIELDS,
   SOURCES_DIRECTORY,
+  SUPPORTED_PULL_QUEUE_FIELDS,
+  SUPPORTED_PUSH_QUEUE_FIELDS,
   Types,
-  UNPACK_ROOT
+  UNPACK_ROOT,
+  VERSION_NODE_TEMPLATE
 )
 from .instance_manager.utils import copy_modified_jars
 from .instance_manager.utils import remove_conflicting_jars
@@ -134,15 +142,16 @@ def apply_mask_to_version(given_version, desired_fields):
   return masked_version
 
 
-def canonical_path(path):
+def canonical_path(path, base=os.curdir):
   """ Resolves a path, following symlinks.
 
   Args:
     path: A string specifying a file system location.
+    base: The path against which to resolve relative paths.
   Returns:
     A string specifying a file system location.
   """
-  return os.path.realpath(os.path.abspath(path))
+  return os.path.realpath(os.path.abspath(os.path.join(base, path)))
 
 
 def valid_link(link_name, link_target, base):
@@ -155,8 +164,8 @@ def valid_link(link_name, link_target, base):
   Returns:
     A boolean indicating whether or not the link is valid.
   """
-  tip = canonical_path(os.path.join(base, os.path.dirname(link_name)))
-  target = canonical_path(os.path.join(tip, link_target))
+  tip = canonical_path(os.path.dirname(link_name), base)
+  target = canonical_path(os.path.join(tip, link_target), base)
   return target.startswith(base)
 
 
@@ -176,7 +185,7 @@ def ensure_path(path):
 
 
 def extract_source(revision_key, location, runtime):
-  """ Unpacks an archive to a given location.
+  """ Unpacks an archive from a given location.
 
   Args:
     revision_key: A string specifying the revision key.
@@ -191,11 +200,8 @@ def extract_source(revision_key, location, runtime):
 
   app_path = os.path.join(revision_base, 'app')
   ensure_path(app_path)
-  # The working directory must be the target in order to validate paths.
-  original_cwd = os.getcwd()
-  os.chdir(app_path)
 
-  if runtime == JAVA:
+  if runtime in (JAVA, JAVA8):
     config_file_name = 'appengine-web.xml'
 
     def is_version_config(path):
@@ -204,44 +210,40 @@ def extract_source(revision_key, location, runtime):
     config_file_name = 'app.yaml'
 
     def is_version_config(path):
-      return canonical_path(path) == os.path.join(app_path, config_file_name)
+      return canonical_path(path, app_path) == \
+             os.path.join(app_path, config_file_name)
 
-  try:
-    with tarfile.open(location, 'r:gz') as archive:
-      # Check if the archive is valid before extracting it.
-      has_config = False
-      for file_info in archive:
-        file_name = file_info.name
-        if not canonical_path(file_name).startswith(app_path):
-          raise constants.InvalidSource(
-            'Invalid location in archive: {}'.format(file_name))
+  with tarfile.open(location, 'r:gz') as archive:
+    # Check if the archive is valid before extracting it.
+    has_config = False
+    for file_info in archive:
+      file_name = file_info.name
+      if not canonical_path(file_name, app_path).startswith(app_path):
+        raise InvalidSource(
+          'Invalid location in archive: {}'.format(file_name))
 
-        if file_info.issym() or file_info.islnk():
-          if not valid_link(file_name, file_info.linkname, app_path):
-            raise constants.InvalidSource(
-              'Invalid link in archive: {}'.format(file_name))
+      if file_info.issym() or file_info.islnk():
+        if not valid_link(file_name, file_info.linkname, app_path):
+          raise InvalidSource('Invalid link in archive: {}'.format(file_name))
 
-        if is_version_config(file_name):
-          has_config = True
+      if is_version_config(file_name):
+        has_config = True
 
-      if not has_config:
-        raise constants.InvalidSource(
-          'Archive must have {}'.format(config_file_name))
+    if not has_config:
+      raise InvalidSource('Archive must have {}'.format(config_file_name))
 
-      archive.extractall(path=app_path)
+    archive.extractall(path=app_path)
 
-    if runtime == GO:
-      try:
-        shutil.move(os.path.join(app_path, 'gopath'), revision_base)
-      except IOError:
-        logger.debug(
-          '{} does not have a gopath directory'.format(revision_key))
+  if runtime == GO:
+    try:
+      shutil.move(os.path.join(app_path, 'gopath'), revision_base)
+    except IOError:
+      logger.debug(
+        '{} does not have a gopath directory'.format(revision_key))
 
-    if runtime == JAVA:
-      remove_conflicting_jars(app_path)
-      copy_modified_jars(app_path)
-  finally:
-    os.chdir(original_cwd)
+  if runtime == JAVA:
+    remove_conflicting_jars(app_path)
+    copy_modified_jars(app_path)
 
 
 def port_is_open(host, port):
@@ -331,7 +333,7 @@ def assigned_locations(zk_client):
     except NoNodeError:
       continue
     version_nodes.extend([
-      constants.VERSION_NODE_TEMPLATE.format(
+      VERSION_NODE_TEMPLATE.format(
         project_id=project_id, service_id=service_id, version_id=version_id)
       for version_id in new_version_ids])
 
@@ -401,7 +403,7 @@ def assign_ports(old_version, new_version, zk_client):
 
   if new_http_port is None:
     try:
-      new_http_port = next(port for port in constants.AUTO_HTTP_PORTS
+      new_http_port = next(port for port in AUTO_HTTP_PORTS
                            if port not in taken_locations)
     except StopIteration:
       raise CustomHTTPError(HTTPCodes.INTERNAL_ERROR,
@@ -409,7 +411,7 @@ def assign_ports(old_version, new_version, zk_client):
 
   if new_https_port is None:
     try:
-      new_https_port = next(port for port in constants.AUTO_HTTPS_PORTS
+      new_https_port = next(port for port in AUTO_HTTPS_PORTS
                             if port not in taken_locations)
     except StopIteration:
       raise CustomHTTPError(HTTPCodes.INTERNAL_ERROR,
@@ -417,7 +419,7 @@ def assign_ports(old_version, new_version, zk_client):
 
   if haproxy_port is None:
     try:
-      haproxy_port = next(port for port in constants.HAPROXY_PORTS
+      haproxy_port = next(port for port in HAPROXY_PORTS
                           if port not in taken_locations)
     except StopIteration:
       raise CustomHTTPError(HTTPCodes.INTERNAL_ERROR,
@@ -433,19 +435,19 @@ def validate_job(job):
   Args:
     job: A dictionary containing cron job configuration details.
   Raises:
-    InvalidConfiguration if configuration is invalid.
+    InvalidCronConfiguration if configuration is invalid.
   """
   required_fields = ('schedule', 'url')
-  supported_fields = ('description', 'schedule', 'url')
+  supported_fields = ('description', 'schedule', 'url', 'target')
 
   for field in required_fields:
     if field not in job:
-      raise InvalidConfiguration(
+      raise InvalidCronConfiguration(
         'Cron job is missing {}: {}'.format(field, job))
 
   for field in job:
     if field not in supported_fields:
-      raise InvalidConfiguration('{} is not supported'.format(field))
+      raise InvalidCronConfiguration('{} is not supported'.format(field))
 
 
 def validate_queue(queue):
@@ -462,11 +464,11 @@ def validate_queue(queue):
     raise InvalidQueueConfiguration('Invalid queue mode: {}'.format(mode))
 
   if mode == 'push':
-    required_fields = tq_constants.REQUIRED_PUSH_QUEUE_FIELDS
-    supported_fields = tq_constants.SUPPORTED_PUSH_QUEUE_FIELDS
+    required_fields = REQUIRED_PUSH_QUEUE_FIELDS
+    supported_fields = SUPPORTED_PUSH_QUEUE_FIELDS
   else:
-    required_fields = tq_constants.REQUIRED_PULL_QUEUE_FIELDS
-    supported_fields = tq_constants.SUPPORTED_PULL_QUEUE_FIELDS
+    required_fields = REQUIRED_PULL_QUEUE_FIELDS
+    supported_fields = SUPPORTED_PULL_QUEUE_FIELDS
 
   for field in required_fields:
     if field not in queue:
@@ -506,18 +508,18 @@ def cron_from_dict(payload):
   Returns:
     A dictionary containing cron information.
   Raises:
-    InvalidConfiguration if configuration is invalid.
+    InvalidCronConfiguration if configuration is invalid.
   """
   try:
     given_jobs = payload['cron']
   except KeyError:
-    raise InvalidConfiguration('Payload must contain cron directive')
+    raise InvalidCronConfiguration('Payload must contain cron directive')
 
   for directive in payload:
     # There are no other directives in the GAE docs. This check is in case more
     # are added later.
     if directive != 'cron':
-      raise InvalidQueueConfiguration('{} is not supported'.format(directive))
+      raise InvalidCronConfiguration('{} is not supported'.format(directive))
 
   for job in given_jobs:
     validate_job(job)

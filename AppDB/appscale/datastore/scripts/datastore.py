@@ -27,6 +27,7 @@ from tornado.options import options
 from .. import dbconstants
 from ..appscale_datastore_batch import DatastoreFactory
 from ..datastore_distributed import DatastoreDistributed
+from ..index_manager import IndexManager
 from ..utils import (clean_app_id,
                      logger,
                      UnprocessedQueryResult)
@@ -338,9 +339,26 @@ class MainHandler(tornado.web.RequestHandler):
         ('', datastore_pb.Error.CAPABILITY_DISABLED,
          'Datastore is in read-only mode.'))
 
-    result = yield datastore_access.commit_transaction(
-      app_id, http_request_data)
-    raise gen.Return(result)
+    txid = datastore_pb.Transaction(http_request_data).handle()
+
+    try:
+      yield datastore_access.apply_txn_changes(app_id, txid)
+    except (dbconstants.TxTimeoutException, dbconstants.Timeout) as timeout:
+      raise gen.Return(('', datastore_pb.Error.TIMEOUT, str(timeout)))
+    except dbconstants.AppScaleDBConnectionError:
+      logger.exception('DB connection error during commit')
+      raise gen.Return(
+        ('', datastore_pb.Error.INTERNAL_ERROR,
+         'Datastore connection error on Commit request.'))
+    except dbconstants.ConcurrentModificationException as error:
+      raise gen.Return(
+        ('', datastore_pb.Error.CONCURRENT_TRANSACTION, str(error)))
+    except (dbconstants.TooManyGroupsException,
+            dbconstants.BadRequest) as error:
+      raise gen.Return(('', datastore_pb.Error.BAD_REQUEST, str(error)))
+
+    commitres_pb = datastore_pb.CommitResponse()
+    raise gen.Return((commitres_pb.Encode(), 0, ''))
 
   def rollback_transaction_request(self, app_id, http_request_data):
     """ Handles the rollback phase of a transaction.
@@ -405,6 +423,9 @@ class MainHandler(tornado.web.RequestHandler):
     except dbconstants.AppScaleDBConnectionError as error:
       logger.exception('DB connection error during query')
       raise gen.Return(('', datastore_pb.Error.INTERNAL_ERROR, str(error)))
+    except dbconstants.NeedsIndex as error:
+      raise gen.Return(('', datastore_pb.Error.NEED_INDEX, str(error)))
+
     raise gen.Return((clone_qr_pb.Encode(), 0, ''))
 
   @gen.coroutine
@@ -492,9 +513,12 @@ class MainHandler(tornado.web.RequestHandler):
 
     try:
       yield datastore_access.delete_composite_index_metadata(app_id, request)
-    except dbconstants.AppScaleDBConnectionError as error:
+    except (dbconstants.AppScaleDBConnectionError,
+            dbconstants.InternalError) as error:
       logger.exception('DB connection error during index deletion')
       raise gen.Return(('', datastore_pb.Error.INTERNAL_ERROR, str(error)))
+    except dbconstants.BadRequest as error:
+      raise gen.Return(('', datastore_pb.Error.BAD_REQUEST, str(error)))
 
     raise gen.Return((response.Encode(), 0, ''))
 
@@ -510,15 +534,18 @@ class MainHandler(tornado.web.RequestHandler):
     global datastore_access
     response = datastore_pb.CompositeIndices()
     try:
-      indices = yield datastore_access.datastore_batch.get_indices(app_id)
-    except dbconstants.AppScaleDBConnectionError as error:
+      indices = datastore_access.get_indexes(app_id)
+    except (dbconstants.AppScaleDBConnectionError,
+            dbconstants.InternalError) as error:
       logger.exception(
-        'DB connection error while fetching indices for {}'.format(app_id))
+        'Internal error while fetching indices for {}'.format(app_id))
       raise gen.Return(('', datastore_pb.Error.INTERNAL_ERROR, str(error)))
+    except dbconstants.BadRequest as error:
+      raise gen.Return(('', datastore_pb.Error.BAD_REQUEST, str(error)))
 
     for index in indices:
       new_index = response.add_index()
-      new_index.ParseFromString(index)
+      new_index.MergeFrom(index)
 
     raise gen.Return((response.Encode(), 0, ''))
 
@@ -862,11 +889,23 @@ def main():
   server_node = '{}/{}:{}'.format(DATASTORE_SERVERS_NODE, options.private_ip,
                                   options.port)
 
-  datastore_batch = DatastoreFactory.getDatastore(
-    args.type, log_level=logger.getEffectiveLevel())
-  zookeeper = zktransaction.ZKTransaction(
-    host=zookeeper_locations, db_access=datastore_batch,
-    log_level=logger.getEffectiveLevel())
+  if args.type == 'cassandra':
+    datastore_batch = DatastoreFactory.getDatastore(
+      args.type, log_level=logger.getEffectiveLevel())
+    zookeeper = zktransaction.ZKTransaction(
+      host=zookeeper_locations, db_access=datastore_batch,
+      log_level=logger.getEffectiveLevel())
+    transaction_manager = TransactionManager(zookeeper.handle)
+    datastore_access = DatastoreDistributed(
+      datastore_batch, transaction_manager, zookeeper=zookeeper,
+      log_level=logger.getEffectiveLevel(),
+      taskqueue_locations=taskqueue_locations)
+  else:
+    from appscale.datastore.fdb.fdb_datastore import FDBDatastore
+    datastore_access = FDBDatastore()
+    datastore_access.start()
+    zookeeper = zktransaction.ZKTransaction(
+      host=zookeeper_locations, log_level=logger.getEffectiveLevel())
 
   zookeeper.handle.add_listener(zk_state_listener)
   zookeeper.handle.ensure_path(DATASTORE_SERVERS_NODE)
@@ -875,11 +914,12 @@ def main():
   zk_state_listener(zookeeper.handle.state)
   zookeeper.handle.ChildrenWatch(DATASTORE_SERVERS_NODE, update_servers_watch)
 
-  transaction_manager = TransactionManager(zookeeper.handle)
-  datastore_access = DatastoreDistributed(
-    datastore_batch, transaction_manager, zookeeper=zookeeper,
-    log_level=logger.getEffectiveLevel(),
-    taskqueue_locations=taskqueue_locations)
+  index_manager = IndexManager(zookeeper.handle, datastore_access,
+                               perform_admin=True)
+  if args.type == 'cassandra':
+    datastore_access.index_manager = index_manager
+  else:
+    datastore_access.index_manager.composite_index_manager = index_manager
 
   server = tornado.httpserver.HTTPServer(pb_application)
   server.listen(args.port)
