@@ -4,7 +4,11 @@ package com.google.appengine.api.users.dev;
 import java.io.UnsupportedEncodingException;
 import java.net.URLEncoder;
 import java.util.Map;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
 
+import com.google.apphosting.api.ApiProxy;
+import com.google.apphosting.api.ApiProxy.Environment;
 import com.google.appengine.tools.development.AbstractLocalRpcService;
 import com.google.appengine.tools.development.LocalRpcService;
 import com.google.appengine.tools.development.LocalServiceContext;
@@ -35,6 +39,9 @@ public final class LocalUserService extends AbstractLocalRpcService
     private boolean oauthIsAdmin = false;
     private final String NGINX_ADDR = "NGINX_ADDR";
     private final String DASHBOARD_HTTPS_PORT = "1443";
+    private final String apiProxyRequest = "com.google.appengine.http_servlet_request";
+    private final String httpScheme = "http://";
+    private final String httpsScheme = "https://";
 
     public UserServicePb.CreateLoginURLResponse createLoginURL( LocalRpcService.Status status, UserServicePb.CreateLoginURLRequest request )
     {
@@ -42,10 +49,28 @@ public final class LocalUserService extends AbstractLocalRpcService
         String destinationUrl = request.getDestinationUrl();
         if(destinationUrl != null && destinationUrl.startsWith("/"))
         {
-            String nginxPort = ResourceLoader.getNginxPort();
-            destinationUrl = "http://" + System.getProperty(NGINX_ADDR) + ":" + nginxPort + destinationUrl;
+            Environment env = ApiProxy.getCurrentEnvironment();
+            if (env == null) {
+                throw new RuntimeException("Could not create URL for login request!");
+            }
+            HttpServletRequest req = (HttpServletRequest) env.getAttributes().get(apiProxyRequest);
+            if (req == null) {
+                throw new RuntimeException("Could not create URL for login request!");
+            }
+            StringBuffer fullURL = req.getRequestURL();
+
+            // Default start domain length will be https scheme length.
+            int startOfDomain = httpsScheme.length();
+
+            // If the URL is http, then change the start of domain to http (otherwise char 4 would be an s).
+            if (fullURL.charAt(4) == ':') { startOfDomain = httpScheme.length(); }
+
+            // Get the part of URL from the scheme to the beginning of the path.
+            String destinationPrefix = fullURL.substring(0, fullURL.indexOf("/", startOfDomain));
+
+            destinationUrl = destinationPrefix + destinationUrl;
         }
-         
+
         response.setLoginUrl(LOGIN_URL + "?continue=" + encode(destinationUrl));
         return response;
     }
@@ -53,8 +78,39 @@ public final class LocalUserService extends AbstractLocalRpcService
     public UserServicePb.CreateLogoutURLResponse createLogoutURL( LocalRpcService.Status status, UserServicePb.CreateLogoutURLRequest request )
     {
         UserServicePb.CreateLogoutURLResponse response = new UserServicePb.CreateLogoutURLResponse();
-        String nginxPort = ResourceLoader.getNginxPort();
-        String redirect_url = "https://" + LOGIN_SERVER + ":" + DASHBOARD_HTTPS_PORT + "/logout?continue=http://" + LOGIN_SERVER + ":" + nginxPort;
+
+        // Get the port we just came from.
+        Environment env = ApiProxy.getCurrentEnvironment();
+        if (env == null) {
+            throw new RuntimeException("Could not create URL for logout request!");
+        }
+        HttpServletRequest req = (HttpServletRequest) env.getAttributes().get(apiProxyRequest);
+        if (req == null) {
+            throw new RuntimeException("Could not create URL for logout request!");
+        }
+        StringBuffer fullURL = req.getRequestURL();
+
+        // Default start domain length will be https scheme length
+        int startOfDomain = httpsScheme.length();
+
+        // If the URL is http, then change the start of domain to http (otherwise char 4 would be an s).
+        if (fullURL.charAt(4) == ':') { startOfDomain = httpScheme.length(); }
+
+        // A : would indicate the start of a port in the URL.
+        int startOfPortString = fullURL.indexOf(":", startOfDomain);
+
+        // The port would end at the beginning of the path.
+        int endOfPortString = fullURL.indexOf("/", startOfDomain);
+
+        // If there is no semicolon, don't add a port.
+        String sourcePort = "";
+
+        // If there is a semicolon, get the port using the indices above.
+        if (startOfPortString != -1) {
+            sourcePort = ":" + fullURL.substring(startOfPortString, endOfPortString);
+        }
+
+        String redirect_url = "https://" + LOGIN_SERVER + ":" + DASHBOARD_HTTPS_PORT + "/logout?continue=http://" + LOGIN_SERVER + sourcePort;
         response.setLogoutUrl(redirect_url);
 
         return response;
@@ -74,7 +130,7 @@ public final class LocalUserService extends AbstractLocalRpcService
         response.setUserId(this.oauthUserId);
         response.setAuthDomain(this.oauthAuthDomain);
         response.setIsAdmin(this.oauthIsAdmin);
-    
+
         return response;
     }
 
