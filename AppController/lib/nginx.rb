@@ -68,12 +68,12 @@ module Nginx
   #
   def self.cleanup_failed_nginx
     Djinn.log_error('****Killing nginx because there was a FATAL error****')
-    `ps aux | grep nginx | grep worker | awk {'print $2'} | xargs kill -9`
+    `ps aux | grep nginx | grep worker | awk {'print $2'} | xargs sudo kill -9`
   end
 
   def self.reload
     Djinn.log_info('Reloading nginx service.')
-    HelperFunctions.shell('service nginx reload')
+    Djinn.log_run_sudo('service nginx reload')
     cleanup_failed_nginx if $?.to_i != 0
   end
 
@@ -472,9 +472,11 @@ LOCATION
 
     target_certs.each_with_index { |cert, index|
       next if File.exist?(cert) && FileUtils.cmp(cert, src_certs[index])
+      Djinn.log_run_sudo("chmod 0600 #{cert}")
 
       FileUtils.cp(src_certs[index], cert)
-      File.chmod(0400, cert)
+      #File.chmod(0400, cert)
+      Djinn.log_run_sudo("chmod 0400 #{cert}")
       Djinn.log_info("Installed certificate/key in #{cert}.")
       certs_modified = true
     }
@@ -531,7 +533,7 @@ CONFIG
     # The pid file location was changed in the default nginx config for
     # Trusty. Because of this, the first reload after writing the new config
     # will fail on Precise.
-    HelperFunctions.shell('service nginx restart')
+    Djinn.log_run_sudo('service nginx restart')
   end
 end
 
