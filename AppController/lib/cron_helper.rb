@@ -17,7 +17,7 @@ module CronHelper
   NO_EMAIL_CRON = 'MAILTO=""'.freeze
 
   # Cron.d folder
-  CRON_CONFIG_DIR = '/etc/cron.d/'.freeze
+  CRON_CONFIG_DIR = '/home/appscale/.cron/'.freeze
 
   # Application capture regex.
   PROJECT_ID_REGEX = /appscale-(.*)/
@@ -98,6 +98,7 @@ CRON
     }
 
     Djinn.log_debug(parsing_log) if write_app_crontab(app_crontab, app)
+    write_user_crontab
   end
 
   # Erases all cron jobs for all applications.
@@ -110,7 +111,7 @@ CRON
   # Args:
   #   app: A String that names the appid of this application.
   def self.clear_app_crontab(app)
-    cron_file = "/etc/cron.d/appscale-#{app}"
+    cron_file = "#{CRON_CONFIG_DIR}appscale-#{app}"
     Djinn.log_run("rm -f #{cron_file}") if File.exists?(cron_file)
   end
 
@@ -153,7 +154,7 @@ CRON
   # Returns:
   #   A Boolean indicating if the crontab was written.
   def self.write_app_crontab(crontab, app)
-    app_cron_file = "/etc/cron.d/appscale-#{app}"
+    app_cron_file = "#{CRON_CONFIG_DIR}appscale-#{app}"
     current = ''
     current = File.read(app_cron_file) if File.exists?(app_cron_file)
     if current != crontab
@@ -166,6 +167,21 @@ CRON
     end
 
     true
+  end
+
+  def self.write_user_crontab
+    cron_entries = []
+    Dir.glob("#{CRON_CONFIG_DIR}appscale-*") do |cron_file|
+    # do work on files ending in .rb in the desired directory
+      file = File.open(cron_file) { |file| file.read }
+      file.each_line do |line|
+        cron_entries.push(line) unless line.start_with?('#')
+      end
+    end
+    File.open("#{CRON_CONFIG_DIR}crontab", "w+") do |f|
+      f.puts(cron_entries)
+    end
+    Djinn.log_run("crontab #{CRON_CONFIG_DIR}crontab")
   end
 
   # Gets an application cron info.
