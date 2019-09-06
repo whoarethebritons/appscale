@@ -260,7 +260,10 @@ module TaskQueue
   # with our secret key, use the same key here but hashed as to not reveal the
   # actual key.
   def self.write_cookie
-    HelperFunctions.write_file(COOKIE_FILE, HelperFunctions.get_taskqueue_secret)
+      #File.chmod(0600, COOKIE_FILE)
+      Djinn.log_run_sudo("chmod 0460 #{COOKIE_FILE}")
+      HelperFunctions.write_file(COOKIE_FILE, HelperFunctions.get_taskqueue_secret)
+      Djinn.log_run_sudo("chmod 0400 #{COOKIE_FILE}")
   end
 
   # Erases all the files that RabbitMQ normally writes to, which can be useful
