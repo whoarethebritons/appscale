@@ -1679,7 +1679,7 @@ class Djinn
     # entry in /etc/hosts for the hostname, which would cause issues if
     # the DNS is not performant. We check and set it here to prevent
     # failure to start the system.
-    update_etc_hosts
+    #update_etc_hosts
 
     # We reload our old IPs (if we find them) so we can check later if
     # they changed and act accordingly.
@@ -3528,8 +3528,8 @@ class Djinn
   def stop_search2_role
     # Stop Solr
     Djinn.log_debug('Stopping SOLR on this node.')
-    Djinn.log_run('systemctl stop solr')
-    Djinn.log_run('systemctl disable solr')
+    Djinn.log_run_sudo('systemctl stop solr')
+    Djinn.log_run_sudo('systemctl disable solr')
     Djinn.log_debug('Done stopping SOLR.')
   end
 
