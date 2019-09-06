@@ -6,6 +6,7 @@ $:.unshift File.join(File.dirname(__FILE__))
 require 'node_info'
 require 'helperfunctions'
 require 'monit_interface'
+require 'pkill'
 
 # Our implementation of the Google App Engine XMPP and Channel APIs uses the
 # open source ejabberd server. This module provides convenience methods to
@@ -57,17 +58,17 @@ module Ejabberd
     # On Xenial, an older epmd daemon can get started that doesn't play well
     # with ejabberd. This makes sure that the compatible service is running.
     begin
-      services = `systemctl list-unit-files`
+      services = `sudo systemctl list-unit-files`
       if services.include?('epmd.service')
         PosixPsutil::Process.processes.each { |process|
           begin
             next unless process.name == 'epmd'
-            process.terminate if process.cmdline.include?('-daemon')
+	    Djinn.log_run_sudo("pkill.rb terminate #{process.pid}") if process.cmdline.include?('-daemon')
           rescue PosixPsutil::NoSuchProcess
             next
           end
         }
-        `systemctl start epmd`
+        `sudo systemctl start epmd`
       end
     rescue Errno::ENOENT
       # Distros without systemd don't have systemctl, and they do not exhibit
@@ -163,7 +164,11 @@ module Ejabberd
     end
 
     config_path = "/etc/ejabberd/#{config_file}"
+    Djinn.log_run_sudo("chmod 0660 #{config_path}")
+    Djinn.log_info('Permission changed')
     HelperFunctions.write_file(config_path, config)
-    Djinn.log_run_sudo("chown ejabberd #{config_path}")
+    Djinn.log_info('File written')
+#    Djinn.log_run_sudo("chmod 0600 #{config_path}")
+#    Djinn.log_info('Permission changed back')
   end
 end
