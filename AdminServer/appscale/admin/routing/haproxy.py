@@ -14,6 +14,7 @@ logger = logging.getLogger('appscale-admin')
 
 # The directory that contains HAProxy config files.
 CONFIG_DIR = os.path.join('/', 'etc', 'haproxy')
+RUN_DIR = os.path.join('/', 'var', 'run', 'haproxy')
 
 
 class InvalidConfig(Exception):
@@ -81,7 +82,7 @@ class HAProxy(object):
   APP_PID = os.path.join('/', 'var', 'run', 'appscale', 'app-haproxy.pid')
 
   # The location of the unix socket used for reporting stats.
-  APP_STATS_SOCKET = os.path.join(CONFIG_DIR, 'stats')
+  APP_STATS_SOCKET = os.path.join(RUN_DIR, 'app-stats')
 
   # The template for the configuration file.
   BASE_TEMPLATE = pkgutil.get_data('appscale.admin.routing',

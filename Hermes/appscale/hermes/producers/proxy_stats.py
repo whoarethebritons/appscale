@@ -756,7 +756,7 @@ class ProxiesStatsSource(object):
     net_connections = psutil.net_connections()
     proxy_stats_list = []
     for haproxy_process_name, info in HAPROXY_PROCESSES.iteritems():
-      logger.debug("Processing {} haproxy stats".format(haproxy_process_name))
+      logger.debug("Processing {} haproxy stats using socket {}".format(haproxy_process_name, info['socket']))
       proxy_stats_list += get_stats_from_one_haproxy(
         info['socket'], info['configs'], net_connections
       )

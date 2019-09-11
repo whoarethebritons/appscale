@@ -272,7 +272,7 @@ global
   spread-checks 5
 
   # Bind socket for haproxy stats
-  stats socket #{HAPROXY_PATH}/stats level admin
+  stats socket /var/run/haproxy/stats mode 771
 
 # Settings in the defaults section apply to all services (unless overridden in a specific config)
 defaults

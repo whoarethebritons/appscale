@@ -168,6 +168,7 @@ CONFIG
                   '--background',
                   '--make-pidfile',
                   '--pidfile', pidfile,
+#		  '--chuid', 'appscale',
                   '--startas', "#{bash} -- -c 'unset \"${!MONIT_@}\"; #{bash_exec}'"]
 
     stop_cmd = "#{start_stop_daemon} --stop --pidfile #{pidfile} " \
