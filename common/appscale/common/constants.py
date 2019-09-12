@@ -33,7 +33,7 @@ def non_negative_int(value):
   return isinstance(value, int) and value >= 0
 
 # AppScale home directory.
-APPSCALE_HOME = os.environ.get("APPSCALE_HOME", "/root/appscale")
+APPSCALE_HOME = os.environ.get("APPSCALE_HOME", "/home/appscale/appscale")
 
 # The ZooKeeper path for keeping track of assignments by machine.
 ASSIGNMENTS_PATH = '/appscale/assignments'
