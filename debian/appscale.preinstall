@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+groupadd appscale
+useradd -r -m -c "AppScale system user." -g appscale -G sudo,ejabberd,haproxy,memcache,rabbitmq,zookeeper,cassandra -s /bin/bash appscale
+
+echo "appscale ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers

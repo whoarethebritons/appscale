@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
-groupadd appscale
-useradd -r -m -c "AppScale system user." -g appscale -G sudo,ejabberd,haproxy,memcache,rabbitmq,zookeeper,cassandra -s /bin/bash appscale
-
-echo "appscale ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
 
 # AppScale
-chown -R appscale:appscale /var/run/appscale
-chown -R appscale:appscale /var/appscale
-chown -R appscale:appscale /root/appscale
-chown -R appscale:appscale /etc/appscale
-chown -R appscale:appscale /opt/appscale #TODO: move to AC
+mkdir -p /var/run/appscale
 mkdir -p /var/apps
+mkdir -p /var/log/appscale
+mkdir /home/appscale/.cron
+chown -R appscale:appscale /etc/appscale
+chown -R appscale:appscale /home/appscale
+chown -R appscale:appscale /opt/appscale #TODO: move to AC
+chown -R appscale:appscale /root/appscale
 chown -R appscale:appscale /var/apps
+chown -R appscale:appscale /var/run/appscale
+chown -R appscale:appscale /var/log/appscale
+chown -R appscale:appscale /var/appscale
 
 # Cassandra
 chgrp -R cassandra /opt/cassandra
@@ -38,7 +39,9 @@ chown -R appscale:appscale /etc/monit/conf.d
 chmod -R g-w /etc/monit/conf.d
 
 # Ejabberd
-chmod g+rw /etc/ejabberd/ejabberd.cfg
+chown ejabberd:ejabberd /etc/default/ejabberd
+chmod g+rw /etc/default/ejabberd
+chmod g+rw /etc/ejabberd/ejabberd.yml
 
 # Rsyslog
 chgrp -R appscale /etc/rsyslog.conf
