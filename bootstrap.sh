@@ -38,12 +38,11 @@ if [ "$(id -u)" != "0" ]; then
 fi
 echo "Success"
 
-echo -n "Checking to make sure \$HOME is /root..."
-if [ "$HOME" != "/root" ]; then
-   echo "Failed"
-   exit 1
-fi
-echo "Success"
+groupadd appscale
+useradd -r -m -c "AppScale system user." -g appscale -G sudo,ejabberd,haproxy,memcache,rabbitmq,zookeeper,cassandra -s /bin/bash appscale
+
+echo "appscale ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
 
 # Let's get the  command line arguments.
 while [ $# -gt 0 ]; do
@@ -180,10 +179,11 @@ while fuser /var/lib/dpkg/lock; do
     if [ "${elapsed_time}" -gt 120 ]; then break; fi
     sleep 1
 done
-apt-get install -y git
-if [ ! -d appscale ]; then
+sudo apt-get install -y git
+if [ ! -d /home/appscale/appscale ]; then
     # We split the commands, to ensure it fails if branch doesn't
     # exists (Precise git will not fail otherwise).
+    sudo -H -u appscale <<<
     git clone ${APPSCALE_REPO} appscale
     (cd appscale; git checkout ${APPSCALE_BRANCH})
 
@@ -203,6 +203,7 @@ if [ ! -d appscale ]; then
         (cd appscale-tools; git checkout "$GIT_TAG")
         (cd appscale-agents; git checkout "$GIT_TAG")
     fi
+    <<<EOF
 fi
 
 # Since the last step in appscale_build.sh is to create the certs directory,
@@ -234,6 +235,7 @@ if [ -d /etc/appscale/certs ]; then
     # This is an upgrade, so let's make sure we use a tag that has
     # been passed, or the last one available. Let's fetch all the
     # available tags first.
+    sudo -H -u appscale <<<
     (cd appscale; git fetch ${APPSCALE_REPO} -t)
     (cd appscale-tools; git fetch ${APPSCALE_TOOLS_REPO} -t)
     (cd appscale-agents; git fetch ${AGENTS_REPO} -t)
@@ -258,7 +260,7 @@ if [ -d /etc/appscale/certs ]; then
             UPDATE_REPO="N"
         fi
     fi
-
+    <<<EOF
     # If CURRENT_BRANCH is empty, then we are not on master, and we
     # are not on a released version: we don't upgrade then.
     if [ "${FORCE_UPGRADE}" = "N"  ] && [  -z "${CURRENT_BRANCH}" ]; then
@@ -308,7 +310,7 @@ if [ -d /etc/appscale/certs ]; then
              "An upgrade to the latest version available will be"\
              "attempted in 5 seconds."
         sleep 5
-
+        sudo -H -u appscale <<<
         # Upgrade the repository. If GIT_TAG is empty, we are on HEAD.
         if [ -n "${GIT_TAG}" ]; then
             if ! (cd appscale; git checkout "$GIT_TAG"); then
@@ -355,23 +357,24 @@ if [ -d /etc/appscale/certs ]; then
                 exit 1
             fi
         fi
+	<<<EOF
     fi
 fi
 
 echo -n "Building AppScale..."
-if ! (cd appscale/debian; bash appscale_build.sh) ; then
+if ! (cd /home/appscale/appscale/debian; bash appscale_build.sh) ; then
     echo "failed!"
     exit 1
 fi
 
 echo -n "Installing AppScale Agents..."
-if ! (cd appscale-agents/; make install-no-venv) ; then
+if ! (cd /home/appscale/appscale-agents/; make install-no-venv) ; then
     echo "Failed to install AppScale Agents"
     exit 1
 fi
 
 echo -n "Building AppScale Tools..." 
-if ! (cd appscale-tools/debian; bash appscale_build.sh) ; then
+if ! (cd /home/appscale/appscale-tools/debian; bash appscale_build.sh) ; then
     echo "failed!"
     exit 1
 fi
@@ -379,12 +382,12 @@ fi
 # Run unit tests if asked.
 if [ "$UNIT_TEST" = "Y" ]; then
     echo "Running Unit tests"
-    (cd appscale; rake)
+    (cd /home/appscale/appscale; rake)
     if [ $? -gt 0 ]; then
         echo "Unit tests failed for appscale!"
         exit 1
     fi
-    (cd appscale-tools; rake)
+    (cd /home/appscale/appscale-tools; rake)
     if [ $? -gt 0 ]; then
         echo "Unit tests failed for appscale-tools!"
         exit 1
