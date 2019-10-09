@@ -38,11 +38,12 @@ if [ "$(id -u)" != "0" ]; then
 fi
 echo "Success"
 
-groupadd appscale
-useradd -r -m -c "AppScale system user." -g appscale -G sudo,ejabberd,haproxy,memcache,rabbitmq,zookeeper,cassandra -s /bin/bash appscale
+if ! id -u appscale > /dev/null 2>&1; then
+  groupadd appscale
+  useradd -r -m -c "AppScale system user." -g appscale -G sudo,ejabberd,haproxy,memcache,rabbitmq,zookeeper,cassandra -s /bin/bash appscale
 
-echo "appscale ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
-
+  echo "appscale ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+fi
 
 # Let's get the  command line arguments.
 while [ $# -gt 0 ]; do
@@ -183,27 +184,27 @@ sudo apt-get install -y git
 if [ ! -d /home/appscale/appscale ]; then
     # We split the commands, to ensure it fails if branch doesn't
     # exists (Precise git will not fail otherwise).
-    sudo -H -u appscale <<<
-    git clone ${APPSCALE_REPO} appscale
-    (cd appscale; git checkout ${APPSCALE_BRANCH})
+    su appscale <<EOF
+git clone ${APPSCALE_REPO} /home/appscale/appscale
+(cd /home/appscale/appscale; git checkout ${APPSCALE_BRANCH})
 
-    git clone ${APPSCALE_TOOLS_REPO} appscale-tools
-    (cd appscale-tools; git checkout ${APPSCALE_TOOLS_BRANCH})
+git clone ${APPSCALE_TOOLS_REPO} /home/appscale/appscale-tools
+(cd /home/appscale/appscale-tools; git checkout ${APPSCALE_TOOLS_BRANCH})
 
-    git clone ${AGENTS_REPO} appscale-agents
-    (cd appscale-agents; git checkout ${AGENTS_BRANCH})
+git clone ${AGENTS_REPO} /home/appscale/appscale-agents
+(cd /home/appscale/appscale-agents; git checkout ${AGENTS_BRANCH})
 
 
-    # Use tags if we specified it.
-    if [ -n "$GIT_TAG"  ] && [  "${APPSCALE_BRANCH}" = "master" ]; then
-        if [ "$GIT_TAG" = "last" ]; then
-            GIT_TAG="$(cd appscale; git tag | tail -n 1)"
-        fi
-        (cd appscale; git checkout "$GIT_TAG")
-        (cd appscale-tools; git checkout "$GIT_TAG")
-        (cd appscale-agents; git checkout "$GIT_TAG")
+# Use tags if we specified it.
+if [ -n "$GIT_TAG"  ] && [  "${APPSCALE_BRANCH}" = "master" ]; then
+    if [ "$GIT_TAG" = "last" ]; then
+        GIT_TAG="$(cd /home/appscale/appscale; git tag | tail -n 1)"
     fi
-    <<<EOF
+    (cd /home/appscale/appscale; git checkout "$GIT_TAG")
+    (cd /home/appscale/appscale-tools; git checkout "$GIT_TAG")
+    (cd /home/appscale/appscale-agents; git checkout "$GIT_TAG")
+fi
+EOF
 fi
 
 # Since the last step in appscale_build.sh is to create the certs directory,
@@ -225,8 +226,8 @@ if [ -d /etc/appscale/certs ]; then
         exit 1
     fi
 
-    APPSCALE_MAJOR="$(sed -n 's/.*\([0-9]\)\+\.\([0-9]\)\+\.[0-9]/\1/gp' appscale/VERSION)"
-    APPSCALE_MINOR="$(sed -n 's/.*\([0-9]\)\+\.\([0-9]\)\+\.[0-9]/\2/gp' appscale/VERSION)"
+    APPSCALE_MAJOR="$(sed -n 's/.*\([0-9]\)\+\.\([0-9]\)\+\.[0-9]/\1/gp' /home/appscale/appscale/VERSION)"
+    APPSCALE_MINOR="$(sed -n 's/.*\([0-9]\)\+\.\([0-9]\)\+\.[0-9]/\2/gp' /home/appscale/appscale/VERSION)"
     if [ -z "$APPSCALE_MAJOR" -o -z "$APPSCALE_MINOR" ]; then
         echo "Cannot determine version of AppScale!"
         exit 1
@@ -235,13 +236,13 @@ if [ -d /etc/appscale/certs ]; then
     # This is an upgrade, so let's make sure we use a tag that has
     # been passed, or the last one available. Let's fetch all the
     # available tags first.
-    sudo -H -u appscale <<<
-    (cd appscale; git fetch ${APPSCALE_REPO} -t)
-    (cd appscale-tools; git fetch ${APPSCALE_TOOLS_REPO} -t)
-    (cd appscale-agents; git fetch ${AGENTS_REPO} -t)
+    su appscale <<EOF
+    (cd /home/appscale/appscale; git fetch ${APPSCALE_REPO} -t)
+    (cd /home/appscale/appscale-tools; git fetch ${APPSCALE_TOOLS_REPO} -t)
+    (cd /home/appscale/appscale-agents; git fetch ${AGENTS_REPO} -t)
 
     if [ "$GIT_TAG" = "last" ]; then
-        GIT_TAG="$(cd appscale; git tag | tail -n 1)"
+        GIT_TAG="$(cd /home/appscale/appscale; git tag | tail -n 1)"
         # Make sure we have this tag in the official repo.
         if ! git ls-remote --tags ${APPSCALE_REPO} | grep -F $GIT_TAG > /dev/null ; then
             echo "\"$GIT_TAG\" not recognized: use --tag to specify tag to upgrade to."
@@ -250,17 +251,17 @@ if [ -d /etc/appscale/certs ]; then
     fi
 
     # We can pull a tag only if we are on the master branch.
-    CURRENT_BRANCH="$(cd appscale; git branch --no-color | grep '^*' | cut -f 2 -d ' ')"
+    CURRENT_BRANCH="$(cd /home/appscale/appscale; git branch --no-color | grep '^*' | cut -f 2 -d ' ')"
     if [ "${CURRENT_BRANCH}" != "master" ] && \
-            (cd appscale; git tag -l | grep $(git describe)) ; then
-        CURRENT_BRANCH="$(cd appscale; git tag -l | grep $(git describe))"
+            (cd /home/appscale/appscale; git tag -l | grep $(git describe)) ; then
+        CURRENT_BRANCH="$(cd /home/appscale/appscale; git tag -l | grep $(git describe))"
         if [ "${CURRENT_BRANCH}" = "${GIT_TAG}" ]; then
             echo "AppScale repository is already at the"\
                  "specified release. Building with current code."
             UPDATE_REPO="N"
         fi
     fi
-    <<<EOF
+EOF
     # If CURRENT_BRANCH is empty, then we are not on master, and we
     # are not on a released version: we don't upgrade then.
     if [ "${FORCE_UPGRADE}" = "N"  ] && [  -z "${CURRENT_BRANCH}" ]; then
@@ -310,10 +311,10 @@ if [ -d /etc/appscale/certs ]; then
              "An upgrade to the latest version available will be"\
              "attempted in 5 seconds."
         sleep 5
-        sudo -H -u appscale <<<
+        su appscale <<EOF
         # Upgrade the repository. If GIT_TAG is empty, we are on HEAD.
         if [ -n "${GIT_TAG}" ]; then
-            if ! (cd appscale; git checkout "$GIT_TAG"); then
+            if ! (cd /home/appscale/appscale; git checkout "$GIT_TAG"); then
                 echo "Please stash your local unsaved changes and checkout"\
                      "the version of AppScale you are currently using to fix"\
                      "this error."
@@ -321,7 +322,7 @@ if [ -d /etc/appscale/certs ]; then
                 exit 1
             fi
 
-            if ! (cd appscale-tools; git checkout "$GIT_TAG"); then
+            if ! (cd /home/appscale/appscale-tools; git checkout "$GIT_TAG"); then
                 echo "Please stash your local unsaved changes and checkout"\
                      "the version of appscale-tools you are currently using"\
                      "to fix this error."
@@ -329,14 +330,14 @@ if [ -d /etc/appscale/certs ]; then
                 exit 1
             fi
         elif [ "${FORCE_UPGRADE}" = "N" ]; then
-            (cd appscale; git pull)
-            (cd appscale-tools; git pull)
+            (cd /home/appscale/appscale; git pull)
+            (cd /home/appscale/appscale-tools; git pull)
         else
             RANDOM_KEY="$(echo $(date), $$|md5sum|head -c 6)-$(date +%s)"
-            REMOTE_REPO_NAME="appscale-bootstrap-${RANDOM_KEY}"
-            if ! (cd appscale;
-                    git remote add -t "${APPSCALE_BRANCH}" -f "${REMOTE_REPO_NAME}" "${APPSCALE_REPO}";
-                    git checkout "${REMOTE_REPO_NAME}"/"${APPSCALE_BRANCH}"); then
+            REMOTE_REPO_NAME="appscale-bootstrap-\$RANDOM_KEY"
+            if ! (cd /home/appscale/appscale;
+                    git remote add -t "${APPSCALE_BRANCH}" -f "\$REMOTE_REPO_NAME" "${APPSCALE_REPO}";
+                    git checkout "\$REMOTE_REPO_NAME"/"${APPSCALE_BRANCH}"); then
                 echo "Please make sure the repository url is correct, the"\
                      "branch exists, and that you have stashed your local"\
                      "changes."
@@ -345,9 +346,9 @@ if [ -d /etc/appscale/certs ]; then
                      "{repo_name}/{remote_branch}"
                 exit 1
             fi
-            if ! (cd appscale-tools;
-                    git remote add -t "${APPSCALE_TOOLS_BRANCH}" -f "${REMOTE_REPO_NAME}" "${APPSCALE_TOOLS_REPO}";
-                    git checkout "${REMOTE_REPO_NAME}"/"${APPSCALE_TOOLS_BRANCH}"); then
+            if ! (cd /home/appscale/appscale-tools;
+                    git remote add -t "${APPSCALE_TOOLS_BRANCH}" -f "\$REMOTE_REPO_NAME" "${APPSCALE_TOOLS_REPO}";
+                    git checkout "\$REMOTE_REPO_NAME"/"${APPSCALE_TOOLS_BRANCH}"); then
                 echo "Please make sure the repository url is correct, the"\
                      "branch exists, and that you have stashed your local"\
                      "changes."
@@ -357,7 +358,7 @@ if [ -d /etc/appscale/certs ]; then
                 exit 1
             fi
         fi
-	<<<EOF
+EOF
     fi
 fi
 
