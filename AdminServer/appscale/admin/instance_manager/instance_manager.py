@@ -445,7 +445,10 @@ class InstanceManager(object):
 
   def _get_lowest_port(self, excluded_ports):
     """ Determines the lowest usuable port for a new instance.
-
+    Args:
+      excluded_ports: A set of ports that the caller is planning on using.
+        This is used to make sure AppServers do not pick the same port since
+        it's possible for the port to not be in self._running_instances yet.
     Returns:
       An integer specifying a free port.
     """
@@ -459,6 +462,11 @@ class InstanceManager(object):
       return port
 
   def _try_port(self, port):
+    """ Helper method to check if the port is actually free or not.
+
+    Returns:
+      True if port is free, False otherwise.
+    """
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     result = False
     try:
