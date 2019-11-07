@@ -4,6 +4,7 @@ import logging
 import monotonic
 import json
 import os
+import socket
 import urllib2
 
 from tornado import gen
@@ -442,7 +443,7 @@ class InstanceManager(object):
 
     yield self._clean_old_sources()
 
-  def _get_lowest_port(self):
+  def _get_lowest_port(self, excluded_ports):
     """ Determines the lowest usuable port for a new instance.
 
     Returns:
@@ -451,11 +452,22 @@ class InstanceManager(object):
     existing_ports = {instance.port for instance in self._running_instances}
     port = STARTING_INSTANCE_PORT
     while True:
-      if port in existing_ports:
+      if port in existing_ports or port in excluded_ports or not self._try_port(port):
         port += 1
         continue
 
       return port
+
+  def _try_port(self, port):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    result = False
+    try:
+      sock.bind(("0.0.0.0", port))
+      result = True
+    except:
+      logger.info("Port {} is in use".format(port))
+    sock.close()
+    return result
 
   @gen.coroutine
   def _restart_unrouted_instances(self):
@@ -535,7 +547,9 @@ class InstanceManager(object):
 
       for instance in to_stop:
         yield self._stop_app_instance(instance)
-
+      excluded_ports = set()
+      for assigned_ports in self._assignments:
+        excluded_ports.update(assigned_ports)
       for version_key, assigned_ports in self._assignments.items():
         try:
           version = self._projects_manager.version_from_key(version_key)
@@ -571,7 +585,9 @@ class InstanceManager(object):
                       and instance.port not in assigned_ports]
         to_start = max(new_assignment_count - len(candidates), 0)
         for _ in range(to_start):
-          yield self._start_instance(version, self._get_lowest_port())
+          port = self._get_lowest_port(excluded_ports)
+          excluded_ports.add(port)
+          yield self._start_instance(version, port)
 
   @gen.coroutine
   def _enforce_instance_details(self):
