@@ -556,8 +556,11 @@ class InstanceManager(object):
       for instance in to_stop:
         yield self._stop_app_instance(instance)
       excluded_ports = set()
-      for assigned_ports in self._assignments:
-        excluded_ports.update(assigned_ports)
+      for _, assigned_ports in self._assignments.items():
+        for port in assigned_ports:
+          if port != -1:
+            excluded_ports.add(port)
+
       for version_key, assigned_ports in self._assignments.items():
         try:
           version = self._projects_manager.version_from_key(version_key)
@@ -568,7 +571,6 @@ class InstanceManager(object):
 
         # The number of required instances that don't have an assigned port.
         new_assignment_count = sum(port == -1 for port in assigned_ports)
-
         # Stop instances that aren't assigned. If the assignment list includes
         # any -1s, match them to running instances that aren't in the assigned
         # ports list.
