@@ -48,26 +48,10 @@ class ZKInterface
   # The ZooKeeper node where datastore servers register themselves.
   DATASTORE_REGISTRY_PATH = '/appscale/datastore/servers'
 
-  # The ZooKeeper node where search servers register themselves.
-  SEARCH2_REGISTRY_PATH = '/appscale/search/live_nodes'
-
   # The location in ZooKeeper that AppControllers write information about their
   # node to, so that others can poll to see if they are alive and what roles
   # they've taken on.
   APPCONTROLLER_NODE_PATH = "#{APPCONTROLLER_PATH}/nodes".freeze
-
-  # The location in ZooKeeper that nodes will try to acquire an ephemeral node
-  # for, to use as a lock.
-  APPCONTROLLER_LOCK_PATH = "#{APPCONTROLLER_PATH}/lock".freeze
-
-  # The location in ZooKeeper that AppControllers write information about
-  # which Google App Engine apps require additional (or fewer) AppServers to
-  # handle the amount of traffic they are receiving.
-  SCALING_DECISION_PATH = "#{APPCONTROLLER_PATH}/scale".freeze
-
-  # The name of the file that nodes use to store the list of Google App Engine
-  # instances that the given node runs.
-  APP_INSTANCE = 'app_instance'.freeze
 
   ROOT_APP_PATH = '/apps'.freeze
 
@@ -120,7 +104,6 @@ class ZKInterface
   # connection was disconnected.
   def self.reinitialize
     init_to_ip(@@client_ip, @@ip)
-    set_live_node_ephemeral_link(@@client_ip)
   end
 
   def self.add_revision_entry(revision_key, ip, md5)
@@ -133,12 +116,7 @@ class ZKInterface
   end
 
   def self.get_revision_hosters(revision_key, keyname)
-    revision_hosters = get_children("#{ROOT_APP_PATH}/#{revision_key}")
-    converted = []
-    revision_hosters.each { |host|
-      converted << NodeInfo.new(get_job_data_for_ip(host), keyname)
-    }
-    converted
+    return get_children("#{ROOT_APP_PATH}/#{revision_key}")
   end
 
   def self.get_revision_md5(revision_key, ip)
@@ -156,84 +134,14 @@ class ZKInterface
     set(APPCONTROLLER_STATE_PATH, JSON.dump(state), NOT_EPHEMERAL)
   end
 
-  # Gets a lock that AppControllers can use to have exclusive write access
-  # (between other AppControllers) to the ZooKeeper hierarchy located at
-  # APPCONTROLLER_PATH. It returns a boolean that indicates whether or not
-  # it was able to acquire the lock or not.
-  def self.get_appcontroller_lock
-    unless exists?(APPCONTROLLER_PATH)
-      set(APPCONTROLLER_PATH, DUMMY_DATA, NOT_EPHEMERAL)
-    end
-
-    info = run_zookeeper_operation {
-      @@zk.create(path: APPCONTROLLER_LOCK_PATH, ephemeral: EPHEMERAL,
-                  data: @@client_ip)
-    }
-    return true if info[:rc].zero?
-
-    Djinn.log_warn("Couldn't get the AppController lock, saw info " \
-                   "#{info.inspect}")
-    false
-  end
-
-  # Releases the lock that AppControllers use to have exclusive write access,
-  # which was acquired via self.get_appcontroller_lock().
-  def self.release_appcontroller_lock
-    delete(APPCONTROLLER_LOCK_PATH)
-  end
-
-  # This method provides callers with an easier way to read and write to
-  # AppController data in ZooKeeper. This is useful for methods that aren't
-  # sure if they already have the ZooKeeper lock or not, but definitely need
-  # it and don't want to accidentally cause a deadlock (grabbing the lock when
-  # they already have it).
-  def self.lock_and_run(&block)
-    # Create the ZK lock path if it doesn't exist.
-    unless exists?(APPCONTROLLER_PATH)
-      set(APPCONTROLLER_PATH, DUMMY_DATA, NOT_EPHEMERAL)
-    end
-
-    # Try to get the lock, and if we can't get it, see if we already have
-    # it. If we do, move on (but don't release it later since this block
-    # didn't grab it), and if we don't have it, try again.
-    got_lock = false
-    begin
-      if get_appcontroller_lock
-        got_lock = true
-      else # it may be that we already have the lock
-        info = run_zookeeper_operation {
-          @@zk.get(path: APPCONTROLLER_LOCK_PATH)
-        }
-        owner = JSON.load(info[:data])
-        if @@client_ip == owner
-          got_lock = false
-        else
-          raise "Tried to get the lock, but it's currently owned by #{owner}."
-        end
-      end
-    rescue => e
-      sleep_time = 5
-      Djinn.log_warn("Saw #{e.inspect}. Retrying in #{sleep_time} seconds.")
-      Kernel.sleep(sleep_time)
-      retry
-    end
-
-    begin
-      yield  # invoke the user's block, and catch any uncaught exceptions
-    rescue => except
-      Djinn.log_error("Ran caller's block but saw an Exception of class " \
-        "#{except.class}")
-      raise except
-    ensure
-      release_appcontroller_lock if got_lock
-    end
-  end
-
   # Creates files in ZooKeeper that relate to a given AppController's
   # role information, so that other AppControllers can detect if it has
   # failed, and if so, what functionality it was providing at the time.
   def self.write_node_information(node, done_loading)
     # Create the folder for all nodes if it doesn't exist.
+    unless exists?(APPCONTROLLER_PATH)
+      set(APPCONTROLLER_PATH, DUMMY_DATA, NOT_EPHEMERAL)
+    end
     unless exists?(APPCONTROLLER_NODE_PATH)
       run_zookeeper_operation {
         @@zk.create(path: APPCONTROLLER_NODE_PATH,
@@ -248,17 +156,9 @@ class ZKInterface
                   data: DUMMY_DATA)
     }
 
-    # Create an ephemeral link associated with this node, which other
-    # AppControllers can use to quickly detect dead nodes.
-    set_live_node_ephemeral_link(node.private_ip)
-
     # Since we're reporting on the roles we've started, we are done loading
     # roles right now, so write that information for others to read and act on.
     set_done_loading(node.private_ip, done_loading)
-
-    # Finally, dump the data from this node to ZK, so that other nodes can
-    # reconstruct it as needed.
-    set_job_data_for_ip(node.private_ip, node.to_hash)
   end
 
   # Deletes all information for a given node, whose data is stored in ZooKeeper.
@@ -282,16 +182,6 @@ class ZKInterface
     end
   end
 
-  # Writes the ephemeral link in ZooKeeper that represents a given node
-  # being alive. Callers should only use this method to indicate that their
-  # own node is alive, and not do it on behalf of other nodes.
-  def self.set_live_node_ephemeral_link(ip)
-    run_zookeeper_operation {
-      @@zk.create(path: "#{APPCONTROLLER_NODE_PATH}/#{ip}/live",
-                  ephemeral: EPHEMERAL, data: DUMMY_DATA)
-    }
-  end
-
   # Provides a convenience function that callers can use to indicate that their
   # node is done loading (if they have finished starting/stopping roles), or is
   # not done loading (if they have roles they need to start or stop).
@@ -299,21 +189,6 @@ class ZKInterface
     zk_value = val ? 'true' : 'false'
     set("#{APPCONTROLLER_NODE_PATH}/#{ip}/done_loading",
         zk_value, NOT_EPHEMERAL)
-  end
-
-  # Checks ZooKeeper to see if the given node is alive, by checking if the
-  # ephemeral file it has created is still present.
-  def self.is_node_live?(ip)
-    exists?("#{APPCONTROLLER_NODE_PATH}/#{ip}/live")
-  end
-
-  def self.get_job_data_for_ip(ip)
-    JSON.load(get("#{APPCONTROLLER_NODE_PATH}/#{ip}/job_data"))
-  end
-
-  def self.set_job_data_for_ip(ip, job_data)
-    set("#{APPCONTROLLER_NODE_PATH}/#{ip}/job_data",
-        JSON.dump(job_data), NOT_EPHEMERAL)
   end
 
   def self.get_versions
@@ -354,20 +229,26 @@ class ZKInterface
     return JSON.load(cron_config_json)
   end
 
-  def self.get_datastore_servers
-    return get_children(DATASTORE_REGISTRY_PATH).map { |server|
+  def self.get_dispatch_rules(project_id)
+    dispatch_node = "/appscale/projects/#{project_id}/dispatch"
+    begin
+      dispatch_config_json = self.get(dispatch_node)
+    rescue FailedZooKeeperOperationException
+      raise ConfigNotFound, "Dispatch configuration not found for #{project_id}"
+    end
+    return JSON.load(dispatch_config_json)
+  end
+
+  def self.list_registered(registration_node)
+    return get_children(registration_node).map { |server|
       server = server.split(':')
       server[1] = server[1].to_i
       server
     }
   end
 
-  def self.get_search2_servers
-    return get_children(SEARCH2_REGISTRY_PATH).map { |server|
-      server = server.split(':')
-      server[1] = server[1].to_i
-      server
-    }
+  def self.get_datastore_servers
+    list_registered(DATASTORE_REGISTRY_PATH)
   end
 
   def self.set_machine_assignments(machine_ip, assignments)
@@ -424,6 +305,20 @@ class ZKInterface
       'detailed' => is_detailed
     }
     set(configs_node, JSON.dump(configs), NOT_EPHEMERAL)
+  end
+
+  # Writes FoundationDB clusterfile content to zookeeper
+  def self.set_fdb_clusterfile_content(content)
+    clusterfile_node = '/appscale/datastore/fdb-clusterfile-content'
+    ensure_path(clusterfile_node)
+    set(clusterfile_node, content, NOT_EPHEMERAL)
+  end
+
+  # Writes Postgres DSN string to zookeeper
+  def self.set_postgres_dsn(postgres_dsn)
+    dsn_node = '/appscale/tasks/postgres_dsn'
+    ensure_path(dsn_node)
+    set(dsn_node, postgres_dsn, NOT_EPHEMERAL)
   end
 
   def self.run_zookeeper_operation(&block)

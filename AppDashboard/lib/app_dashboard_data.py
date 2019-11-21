@@ -85,9 +85,6 @@ class AppDashboardData():
   # The port that the Celery Flower service runs on, by default.
   FLOWER_PORT = 5555
 
-  # The port that the Monit Dashboard runs on, by default.
-  MONIT_PORT = 2812
-
   def __init__(self, helper=None):
     """ Creates a new AppDashboard, which will cache SOAP-exposed information
     provided to us by the AppDashboardHelper.
@@ -130,6 +127,8 @@ class AppDashboardData():
         "relocate_app": {"title": "Relocate Application",
                          "link": "/apps/relocate",
                          "template": "apps/relocate.html"},
+        "service_accounts": {"title": "Service Accounts",
+                             "link": "/service_accounts"},
         "manage_users": {"title": "Manage Users",
                          "link": "/authorize",
                          "is_admin_panel": True,
@@ -137,8 +136,6 @@ class AppDashboardData():
         "logging": {"title": "Log Viewer",
                     "link": "/logs",
                     "template": "logs/main.html"},
-        "monit": {"title": "Monit",
-                  "link": self.get_monit_url()},
         "taskqueue": {"title": "TaskQueue",
                       "link": self.get_flower_url()},
         "pull_queue_viewer": {"title": "Pull Queue Viewer",
@@ -159,7 +156,9 @@ class AppDashboardData():
                                           {"delete_app": lookup_dict[
                                               "delete_app"]},
                                           {"relocate_app": lookup_dict[
-                                              "relocate_app"]}]}
+                                              "relocate_app"]},
+                                          {"service_accounts": lookup_dict[
+                                              "service_accounts"]}]}
       if user_info.is_user_cloud_admin:
         lookup_dict["appscale_management"] = {"AppScale Management":
                                               [{"cloud_stats": lookup_dict[
@@ -167,7 +166,7 @@ class AppDashboardData():
                                                {"manage_users": lookup_dict[
                                                    "manage_users"]}]}
       if user_info.owned_apps or user_info.is_user_cloud_admin:
-        sections = ['monit', 'taskqueue', 'pull_queue_viewer', 'logging',
+        sections = ['taskqueue', 'pull_queue_viewer', 'logging',
                     'app_console', 'cron', 'datastore_viewer']
         lookup_dict["debugging_monitoring"] = {
           "Debugging/Monitoring": [{section: lookup_dict[section]}
@@ -237,19 +236,6 @@ class AppDashboardData():
       displayed to users.
     """
     return "http://{0}:{1}".format(self.get_head_node_ip(), self.FLOWER_PORT)
-
-  def get_monit_url(self):
-    """ Retrieves the URL where the Monit Dashboard web service can be found in
-    this AppScale deployment.
-
-    Note that although a Monit Dashboard runs on each node, we will send users
-    to the one on the login node.
-
-    Returns:
-      A str that names the URL where the services on the login node can be
-      viewed, started, and stopped.
-    """
-    return "http://{0}:{1}".format(self.get_head_node_ip(), self.MONIT_PORT)
 
   def get_head_node_ip(self):
     """ Retrieves the IP address or FQDN where the machine running the

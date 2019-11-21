@@ -1,11 +1,10 @@
 """ This script creates a new user. Fails if the user already exists. """
 
 import hashlib
-import M2Crypto
+import random
 import string
 import sys
 
-from appscale.common import appscale_info
 from appscale.common.ua_client import UAClient
 
 
@@ -13,15 +12,13 @@ def random_password(length=10):
   """ Generates a random password.
 
   Args:
-    lenght: An int, the number of characters in the password.
+    length: An int, the number of characters in the password.
   Returns:
     A str of random characters.
   """
+  sysrand = random.SystemRandom()
   chars = string.ascii_uppercase + string.digits + string.ascii_lowercase
-  password = ''
-  for i in range(length):
-    password += chars[ord(M2Crypto.m2.rand_bytes(1)) % len(chars)]
-  return password
+  return ''.join(sysrand.choice(chars) for _ in range(length))
 
 def usage():
   print ""
@@ -56,8 +53,7 @@ if __name__ == "__main__":
  
   new_password = random_password()
 
-  secret = appscale_info.get_secret()
-  ua_client = UAClient(appscale_info.get_db_master_ip(), secret)
+  ua_client = UAClient()
 
   if ua_client.does_user_exist(email):
     print "User already exists."

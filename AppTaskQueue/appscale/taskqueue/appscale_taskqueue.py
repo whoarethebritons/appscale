@@ -4,16 +4,16 @@ servers. """
 import argparse
 import json
 import logging
+import monotonic
 import signal
 import sys
-import time
 
-from kazoo.client import KazooClient
+from kazoo.client import KazooClient, KazooState, NodeExistsError
 from tornado import gen, httpserver, ioloop
 from tornado.web import Application, RequestHandler
 
 from appscale.common import appscale_info
-from appscale.common.constants import ZK_PERSISTENT_RECONNECTS
+from appscale.common.constants import TQ_SERVERS_NODE, ZK_PERSISTENT_RECONNECTS
 from appscale.common.unpackaged import APPSCALE_PYTHON_APPSERVER
 
 from appscale.taskqueue import distributed_tq
@@ -124,7 +124,7 @@ class ProtobufferHandler(RequestHandler):
     else:
       http_request_data = apirequest.request
 
-    start_time = time.time()
+    start_time = monotonic.monotonic()
 
     request_log = method
     if apirequest.HasField("request_id"):
@@ -171,7 +171,7 @@ class ProtobufferHandler(RequestHandler):
     if result:
       response, errcode, errdetail = result
 
-    elapsed_time = round(time.time() - start_time, 3)
+    elapsed_time = round(monotonic.monotonic() - start_time, 3)
     timing_log = 'Elapsed: {}'.format(elapsed_time)
     if apirequest.HasField("request_id"):
       timing_log += ' ({})'.format(apirequest.request_id)
@@ -256,14 +256,14 @@ def prepare_graceful_shutdown(zk_client, tornado_server):
     """ Stop accepting new requests and exit when all requests are finished
     or timeout is exceeded.
     """
-    signal_time = time.time()
+    deadline = monotonic.monotonic() + SHUTTING_DOWN_TIMEOUT
     logger.info('Stopping server')
     tornado_server.stop()
     io_loop = ioloop.IOLoop.current()
 
     def stop_on_signal():
       current_requests = service_stats.current_requests
-      if current_requests and time.time() - signal_time < SHUTTING_DOWN_TIMEOUT:
+      if current_requests and monotonic.monotonic() < deadline:
         logger.warning("Can't stop Taskqueue server now as {reqs} requests are "
                        "still in progress".format(reqs=current_requests))
       else:
@@ -278,6 +278,37 @@ def prepare_graceful_shutdown(zk_client, tornado_server):
     ioloop.PeriodicCallback(stop_on_signal, 200).start()
 
   return graceful_shutdown
+
+
+def register_location(zk_client, host, port):
+  """ Register service location with ZooKeeper. """
+  server_node = '{}/{}:{}'.format(TQ_SERVERS_NODE, host, port)
+
+  def create_server_node():
+    """ Creates a server registration entry in ZooKeeper. """
+    try:
+      zk_client.retry(zk_client.create, server_node, ephemeral=True)
+    except NodeExistsError:
+      # If the server gets restarted, the old node may exist for a short time.
+      zk_client.retry(zk_client.delete, server_node)
+      zk_client.retry(zk_client.create, server_node, ephemeral=True)
+
+    logger.info('TaskQueue server registered at {}'.format(server_node))
+
+  def zk_state_listener(state):
+    """ Handles changes to ZooKeeper connection state.
+
+    Args:
+      state: A string specifying the new ZooKeeper connection state.
+    """
+    if state == KazooState.CONNECTED:
+      ioloop.IOLoop.instance().add_callback(create_server_node)
+
+  zk_client.add_listener(zk_state_listener)
+  zk_client.ensure_path(TQ_SERVERS_NODE)
+  # Since the client was started before adding the listener, make sure the
+  # server node gets created.
+  zk_state_listener(zk_client.state)
 
 
 def main():
@@ -297,6 +328,8 @@ def main():
     hosts=','.join(appscale_info.get_zk_node_ips()),
     connection_retry=ZK_PERSISTENT_RECONNECTS)
   zk_client.start()
+
+  register_location(zk_client, appscale_info.get_private_ip(), args.port)
 
   # Initialize tornado server
   task_queue = distributed_tq.DistributedTaskQueue(zk_client)

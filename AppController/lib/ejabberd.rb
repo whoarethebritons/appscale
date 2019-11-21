@@ -5,7 +5,7 @@ require 'fileutils'
 $:.unshift File.join(File.dirname(__FILE__))
 require 'node_info'
 require 'helperfunctions'
-require 'monit_interface'
+require 'service_helper'
 require 'pkill'
 
 # Our implementation of the Google App Engine XMPP and Channel APIs uses the
@@ -23,18 +23,18 @@ module Ejabberd
 
   ONLINE_USERS_FILE = '/etc/appscale/online_xmpp_users'.freeze
 
-  def self.start
-    service = `which service`.chomp
-    start_cmd = "#{service} ejabberd start"
-    stop_cmd = "#{service} ejabberd stop"
-    pidfile = '/var/run/ejabberd/ejabberd.pid'
+  SERVICE_NAME = 'appscale-ejabberd.target'.freeze
 
-    self.ensure_correct_epmd
-    MonitInterface.start_daemon(:ejabberd, start_cmd, stop_cmd, pidfile)
+  def self.start(reload = false)
+    if reload
+      ServiceHelper.reload(SERVICE_NAME, true)
+    else
+      ServiceHelper.start(SERVICE_NAME)
+    end
   end
 
   def self.stop
-    MonitInterface.stop(:ejabberd) if MonitInterface.is_running?(:ejabberd)
+    ServiceHelper.stop(SERVICE_NAME)
   end
 
   def self.clear_online_users
@@ -63,12 +63,12 @@ module Ejabberd
         PosixPsutil::Process.processes.each { |process|
           begin
             next unless process.name == 'epmd'
-	    Djinn.log_run_sudo("pkill.rb terminate #{process.pid}") if process.cmdline.include?('-daemon')
+	          Djinn.log_run_sudo("pkill.rb terminate #{process.pid}") if process.cmdline.include?('-daemon')
           rescue PosixPsutil::NoSuchProcess
             next
           end
         }
-        `sudo systemctl start epmd`
+        `sudo systemctl start epmd.service`
       end
     rescue Errno::ENOENT
       # Distros without systemd don't have systemctl, and they do not exhibit
@@ -109,17 +109,6 @@ module Ejabberd
     end
 
     major_version
-  end
-
-  def self.update_ctl_config
-    # Make sure ejabberd writes a pidfile.
-    begin
-      config = File.read(CONFIG_FILE)
-      config.gsub!('#EJABBERD_PID_PATH=', 'EJABBERD_PID_PATH=')
-      File.open(CONFIG_FILE, 'w') { |file| file.write(config) }
-    rescue Errno::ENOENT
-      Djinn.log_debug("#{CONFIG_FILE} does not exist")
-    end
   end
 
   def self.write_config_file(domain, my_private_ip)
