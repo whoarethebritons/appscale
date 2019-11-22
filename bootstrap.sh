@@ -227,56 +227,57 @@ fi
 
 
 echo "Cloning appscale repositories"
+APPSCALE_HOME_DIR="/home/appscale"
 su appscale << EOF
 # We split the commands, to ensure it fails if branch doesn't
 # exists (Precise git will not fail otherwise).
-git clone ${APPSCALE_REPO} appscale
-(cd appscale; git checkout ${APPSCALE_TARGET})
-VERSION=$(cat /root/appscale/VERSION | grep -oE "[0-9]+\.[0-9]+\.[0-9]+")
+git clone $APPSCALE_REPO ${APPSCALE_HOME_DIR}/appscale
+(cd ${APPSCALE_HOME_DIR}/appscale; git checkout ${APPSCALE_TARGET})
+VERSION=$(cat /home/appscale/appscale/VERSION | grep -oE "[0-9]+\.[0-9]+\.[0-9]+")
 
-git clone ${APPSCALE_TOOLS_REPO} appscale-tools
-(cd appscale-tools; git checkout "${TOOLS_TARGET}")
+git clone ${APPSCALE_TOOLS_REPO} ${APPSCALE_HOME_DIR}/appscale-tools
+(cd ${APPSCALE_HOME_DIR}/appscale-tools; git checkout ${TOOLS_TARGET})
 
-if [ "${RELY_ON_TAG}" = "N" ] || version_ge "${VERSION}" 3.8.0; then
-    git clone ${AGENTS_REPO} appscale-agents
-    (cd appscale-agents; git checkout "${AGENTS_TARGET}")
+if [ ${RELY_ON_TAG} = "N" ] || version_ge ${VERSION} 3.8.0; then
+    git clone ${AGENTS_REPO} ${APPSCALE_HOME_DIR}/appscale-agents
+    (cd ${APPSCALE_HOME_DIR}/appscale-agents; git checkout ${AGENTS_TARGET})
 fi
-if [ "${RELY_ON_TAG}" = "N" ] || version_ge "${VERSION}" 4.0.0; then
-    git clone ${THIRDPARTIES_REPO} appscale-thirdparties
-    (cd appscale-thirdparties; git checkout "${THIRDPARTIES_TARGET}")
+if [ ${RELY_ON_TAG} = "N" ] || version_ge ${VERSION} 4.0.0; then
+    git clone ${THIRDPARTIES_REPO} ${APPSCALE_HOME_DIR}/appscale-thirdparties
+    (cd ${APPSCALE_HOME_DIR}/appscale-thirdparties; git checkout ${THIRDPARTIES_TARGET})
 fi
 EOF
 
 echo -n "Building AppScale..."
-if ! (cd appscale/debian; bash appscale_build.sh) ; then
+if ! (cd ${APPSCALE_HOME_DIR}/appscale/debian; bash appscale_build.sh) ; then
     echo "Failed to install AppScale core"
     exit 1
 fi
 
 if [ "${RELY_ON_TAG}" = "N" ] || version_ge "${VERSION}" 3.8.0; then
     echo -n "Installing AppScale Agents..."
-    if ! (cd appscale-agents/; make install-no-venv) ; then
+    if ! (cd ${APPSCALE_HOME_DIR}/appscale-agents/; make install-no-venv) ; then
         echo "Failed to install AppScale Agents"
         exit 1
     fi
 fi
 
 echo -n "Building AppScale Tools..."
-if ! (cd appscale-tools/debian; bash appscale_build.sh) ; then
+if ! (cd ${APPSCALE_HOME_DIR}/appscale-tools/debian; bash appscale_build.sh) ; then
     echo "Failed to install AppScale-Tools"
     exit 1
 fi
 
 if [ "${RELY_ON_TAG}" = "N" ] || version_ge "${VERSION}" 4.0.0; then
     echo -n "Installing Thirdparty software..."
-    if ! (cd appscale-thirdparties/; bash install_all.sh) ; then
+    if ! (cd ${APPSCALE_HOME_DIR}/appscale-thirdparties/; bash install_all.sh) ; then
         echo "Failed to install Thirdparties software"
         exit 1
     fi
 fi
 
 # Add appscale user to groups of dependencies.
-usermod -a -G ejabberd,haproxy,memcache,rabbitmq,zookeeper,cassandra
+usermod -a -G ejabberd,haproxy,memcache,rabbitmq,zookeeper,cassandra appscale
 
 # Run unit tests if asked.
 if [ "$UNIT_TEST" = "Y" ]; then
