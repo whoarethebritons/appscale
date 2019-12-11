@@ -62,8 +62,10 @@ if ! id -u appscale > /dev/null 2>&1; then
   groupadd appscale
   useradd -r -m -c "AppScale system user." -g appscale -G sudo -s /bin/bash appscale
   mkdir -p /home/appscale/.ssh
+  ls -al /home/appscale
   chown -R appscale:appscale /home/appscale/.ssh
   chmod 700 /home/appscale/.ssh
+  ls -al /home/appscale
   echo "appscale ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
 fi
 
