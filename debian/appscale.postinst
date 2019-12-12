@@ -4,6 +4,7 @@
 mkdir -p /var/run/appscale
 mkdir -p /var/apps
 mkdir -p /var/log/appscale
+mkdir -p /etc/appscale/certs
 mkdir /home/appscale/.cron
 chown -R appscale:appscale /etc/appscale
 chown -R appscale:appscale /home/appscale

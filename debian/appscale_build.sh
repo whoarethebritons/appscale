@@ -150,8 +150,4 @@ else
     bash debian/appscale.postinst || exit 1
 fi
 
-if ! mkdir -p ${CONFIG_DIR}/certs; then
-    echo "Unable to complete AppScale installation."
-    exit 1
-fi
 echo "AppScale installation completed successfully!"
