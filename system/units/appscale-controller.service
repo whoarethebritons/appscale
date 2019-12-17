@@ -7,8 +7,9 @@ Before=appscale-control.target
 After=network-online.target time-sync.target
 
 [Service]
-Environment=HOME=/root
-ExecStart=/usr/bin/ruby -w /root/appscale/AppController/djinnServer.rb
+Environment=HOME=/home/appscale
+User=appscale
+ExecStart=/usr/bin/ruby -w /home/appscale/appscale/AppController/djinnServer.rb
 SyslogIdentifier=%p
 # Security
 CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_SETGID CAP_SETUID CAP_CHOWN CAP_SYS_MODULE CAP_AUDIT_WRITE CAP_NET_ADMIN CAP_NET_RAW CAP_KILL
