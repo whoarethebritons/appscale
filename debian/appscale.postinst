@@ -12,7 +12,7 @@ chown -R appscale:appscale /opt/appscale #TODO: move to AC
 chown -R appscale:appscale /root/appscale
 chown -R appscale:appscale /var/apps
 chown -R appscale:appscale /var/run/appscale
-#chown -R appscale:appscale /var/log/appscale
+chown -R appscale:appscale /run/appscale
 chown -R appscale:appscale /var/appscale
 
 # Cassandra
