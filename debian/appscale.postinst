@@ -2,6 +2,7 @@
 
 # AppScale
 mkdir -p /var/run/appscale
+mkdir -p /run/appscale
 mkdir -p /var/apps
 mkdir -p /var/log/appscale
 mkdir -p /etc/appscale/certs
