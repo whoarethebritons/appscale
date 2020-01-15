@@ -14,31 +14,31 @@ module ServiceHelper
     ports = [nil] if ports.nil?
     ports.each { |port|
       service_name = if port.nil? then name.to_s else "#{name.to_s}#{port}" end
-      run_cmd("#{SYSTEMCTL} #{command_and_args} #{expand_name(service_name)}")
+      run_cmd("sudo #{SYSTEMCTL} #{command_and_args} #{expand_name(service_name)}")
     }
   end
 
   def self.restart(name, start = true)
     restart_command = if start then "restart" else "try-restart" end
     service_name_match = if name.end_with?('@') then "#{name.to_s}*" else name.to_s end
-    run_cmd("#{SYSTEMCTL} #{restart_command} #{expand_name(service_name_match)}")
+    run_cmd("sudo #{SYSTEMCTL} #{restart_command} #{expand_name(service_name_match)}")
   end
 
   def self.reload(name, start = false)
     reload_command = if start then "reload-or-restart" else "try-reload-or-restart" end
     service_name_match = if name.end_with?('@') then "#{name.to_s}*" else name.to_s end
-    run_cmd("#{SYSTEMCTL} #{reload_command} #{expand_name(service_name_match)}")
+    run_cmd("sudo #{SYSTEMCTL} #{reload_command} #{expand_name(service_name_match)}")
   end
 
   def self.stop(name)
     command_and_args = if name.start_with?('appscale-') then '--runtime --now disable' else 'stop' end
     service_name_match = if name.end_with?('@') then "#{name.to_s}*" else name.to_s end
-    run_cmd("#{SYSTEMCTL} #{command_and_args} #{expand_name(service_name_match)}")
+    run_cmd("sudo #{SYSTEMCTL} #{command_and_args} #{expand_name(service_name_match)}")
   end
 
   def self.is_running?(name, port = nil)
     service_name_match = if name.end_with?('@') then if port.nil? then "#{name.to_s}*" else "#{name.to_s}#{port}" end else name.to_s end
-    output = run_cmd("#{SYSTEMCTL} is-active #{expand_name(service_name_match)}")
+    output = run_cmd("sudo #{SYSTEMCTL} is-active #{expand_name(service_name_match)}")
     not (output =~ /^active$/).nil?
   end
 
@@ -51,7 +51,7 @@ module ServiceHelper
   def self.running(name)
     services = []
     service_name_match = if name.end_with?('@') then "#{name.to_s}*" else name.to_s end
-    output = run_cmd("#{SYSTEMCTL} --state=active --plain --no-pager --no-legend list-units #{service_name_match}")
+    output = run_cmd("sudo #{SYSTEMCTL} --state=active --plain --no-pager --no-legend list-units #{service_name_match}")
     services_raw = output.gsub! /(.*)\.service .*/, '\1'
     if services_raw
       services = services_raw.split("\n")
