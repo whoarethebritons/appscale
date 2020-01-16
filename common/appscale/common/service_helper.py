@@ -11,7 +11,7 @@ services or else are the unit names but without the type suffix.
 """
 
 
-SYSTEMCTL = '/bin/systemctl'
+SYSTEMCTL = ['sudo', '/bin/systemctl']
 
 
 STATUS_MAP = {
@@ -32,7 +32,7 @@ def __systemctl_run(args):
   Raises:
     subprocess.CalledProcessError if command returned status different from 0.
   """
-  subprocess.check_call([SYSTEMCTL] + args)
+  subprocess.check_call(SYSTEMCTL + args)
 
 
 def __systemctl_out(args):
@@ -45,7 +45,7 @@ def __systemctl_out(args):
   Raises:
     subprocess.CalledProcessError if command returned status different from 0.
   """
-  return subprocess.check_output([SYSTEMCTL] + args)
+  return subprocess.check_output(SYSTEMCTL + args)
 
 
 def __safe_systemctl_run(args):
