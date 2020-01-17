@@ -74,7 +74,7 @@ def start_zookeeper(clear_datastore)
   end
 
   # myid is needed for multi node configuration.
-  Djinn.log_run("ln -sfv /etc/zookeeper/conf/myid #{DATA_LOCATION}/myid")
+  Djinn.log_run_sudo("ln -sfv /etc/zookeeper/conf/myid #{DATA_LOCATION}/myid")
 
   ServiceHelper.start(ZOOKEEPER_SERVICE_NAME)
 end
