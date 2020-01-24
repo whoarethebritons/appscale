@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 # The directory that contains HAProxy config files.
 CONFIG_DIR = os.path.join('/', 'etc', 'haproxy')
-RUN_DIR = os.path.join('/', 'var', 'run', 'haproxy')
+RUN_DIR = os.path.join('/', 'var', 'run', 'appscale', 'haproxy')
 
 # The location of the combined HAProxy config file for AppServer instances.
 APP_CONFIG = os.path.join(CONFIG_DIR, 'app-haproxy.cfg')
